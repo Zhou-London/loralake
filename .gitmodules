@@ -1,0 +1,3 @@
+[submodule "third_party/sd-scripts"]
+	path = third_party/sd-scripts
+	url = https://github.com/kohya-ss/sd-scripts.git
