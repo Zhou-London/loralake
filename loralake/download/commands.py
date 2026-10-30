@@ -84,7 +84,7 @@ async def prepare_mirror(client: httpx.AsyncClient, booru: Danbooru, tags: str, 
         return None
     if not config.hf_token:
         if use_mirror:
-            console.print("[red]使用镜像需要在 config 中填写 HF_TOKEN")
+            console.print("[red]使用镜像需要在 config 中填写 HF_API_KEY")
         return None
     if use_mirror is None and planned < MIRROR_MIN_IMAGES:
         return None

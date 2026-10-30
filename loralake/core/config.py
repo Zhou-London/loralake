@@ -30,7 +30,7 @@ def _optional_path(value: str | None) -> Path | None:
 
 
 def _comfyui_models_dir(values: dict[str, str]) -> Path | None:
-    if explicit := values.get("COMFYUI_MODELS_DIR"):
+    if explicit := values.get("COMFY_MODELS_PATH"):
         return _resolve_dir(explicit)
     if python_path := values.get("PYTHON_PATH"):
         candidate = Path(python_path).parents[2] / "models"
@@ -68,7 +68,7 @@ class Config:
             anima_vae=_optional_path(values.get("ANIMA_VAE")),
             danbooru_login=values.get("DANBOORU_LOGIN", ""),
             danbooru_api_key=values.get("DANBOORU_API_KEY", ""),
-            hf_token=values.get("HF_TOKEN") or values.get("HF_API_KEY") or os.environ.get("HF_TOKEN", ""),
+            hf_token=values.get("HF_API_KEY") or os.environ.get("HF_TOKEN", ""),
             proxy=values.get("PROXY", ""),
             cdn_workers=int(values.get("DOWNLOAD_WORKERS") or 8),
             mirror_workers=int(values.get("MIRROR_WORKERS") or 32),
