@@ -19,12 +19,17 @@ from ..core.dataset import METADATA_FILE, available_records
 from ..core.formatting import human_size
 from ..core.net import RETRY_STATUS, gate_for, paused_sites
 from .booru import Booru, Post
-from .mirror import SNAPSHOT_MAX_ID, Mirror
+from .mirror import Mirror
 
 CDN_QUEUE_SIZE = 5000
+CDN_BURST_MAX = 150
+CDN_PACED_RATE = 2.5
 MAX_ATTEMPTS = 5
 MAX_RATE_LIMIT_RETRIES = 60
 MIRROR_ATTEMPTS = 3
+ASPECT_TOLERANCE = 0.02
+WEBP_QUALITY = 95
+WEBP_MAX_SIDE = 16383
 SPEED_WINDOW = 10.0
 REFRESH_INTERVAL = 0.5
 CHUNK_SIZE = 1 << 16
@@ -36,12 +41,36 @@ def load_downloaded_keys(out_dir: Path) -> set[str]:
     return {record.key for record in available_records(out_dir)}
 
 
-def has_dimensions(path: Path, width: int, height: int) -> bool:
+def image_size(path: Path) -> tuple[int, int] | None:
     try:
         with Image.open(path) as image:
-            return image.size == (width, height)
+            return image.size
     except Exception:
-        return False
+        return None
+
+
+def same_aspect(size: tuple[int, int], post: Post) -> bool:
+    if not post.width or not post.height:
+        return True
+    return abs(size[0] / size[1] / (post.width / post.height) - 1) <= ASPECT_TOLERANCE
+
+
+def convert_to_webp(src: Path, dst: Path) -> tuple[int, int]:
+    encoded = dst.with_name(dst.name + ".encoding")
+    with Image.open(src) as image:
+        image.load()
+        size = image.size
+        reencode = image.format != "WEBP"
+        if reencode:
+            has_alpha = image.mode in ("RGBA", "LA", "PA") or "transparency" in image.info
+            converted = image.convert("RGBA" if has_alpha else "RGB")
+            converted.thumbnail((WEBP_MAX_SIDE, WEBP_MAX_SIDE))
+            converted.save(encoded, "WEBP", quality=WEBP_QUALITY, method=4)
+            size = converted.size
+    os.replace(encoded if reencode else src, dst)
+    if reencode:
+        src.unlink()
+    return size
 
 
 class RetryableError(Exception):
@@ -120,15 +149,19 @@ class Downloader:
         self._streamed_bytes = 0
         self._queued = 0
         self._limit: int | None = None
+        self._cdn_expected = 0
+        self._cdn_started = 0
+        self._next_cdn_slot = 0.0
         self._downloaded_keys: set[str] = set()
         self._cdn_queue: asyncio.Queue[Post | None] = asyncio.Queue(maxsize=CDN_QUEUE_SIZE)
         self._mirror_queue: asyncio.Queue[Post | None] = asyncio.Queue(maxsize=max(self.mirror_workers, 1) * 4)
 
     async def run(self, booru: Booru, tags: str, expected_images: int, limit: int | None,
-                  mirror_share: float = 0.5) -> DownloadResult:
+                  mirror_share: float = 0.5, cdn_expected: int = 0) -> DownloadResult:
         self.out_dir.mkdir(parents=True, exist_ok=True)
         self._downloaded_keys = load_downloaded_keys(self.out_dir)
         self._limit = limit
+        self._cdn_expected = cdn_expected
         planned = min(expected_images, limit) if limit else expected_images
 
         with (DownloadProgress(self.console, planned, show_sources=self.mirror is not None) as progress,
@@ -180,8 +213,8 @@ class Downloader:
             if self.mirror is None:
                 await self._enqueue(booru.iter_posts(tags), self._cdn_queue, progress)
                 return
-            recent_posts = booru.iter_posts(tags, id_above=SNAPSHOT_MAX_ID)
-            archived_posts = booru.iter_posts(tags, id_below=SNAPSHOT_MAX_ID + 1)
+            recent_posts = booru.iter_posts(tags, id_above=self.mirror.max_id)
+            archived_posts = booru.iter_posts(tags, id_below=self.mirror.max_id + 1)
             mirror_quota = round(self._limit * mirror_share) if self._limit else None
             cdn_quota = self._limit - mirror_quota if self._limit and mirror_quota is not None else None
             recent_exhausted, archived_exhausted = await asyncio.gather(
@@ -197,12 +230,9 @@ class Downloader:
             for _ in range(self.mirror_workers):
                 await self._mirror_queue.put(None)
 
-    def _record(self, post: Post, via: Via, metadata: IO[str], progress: DownloadProgress,
-                file_md5: str | None = None) -> None:
+    def _record(self, post: Post, via: Via, size: tuple[int, int], metadata: IO[str], progress: DownloadProgress) -> None:
         (self.out_dir / f"{post.key}.txt").write_text(post.caption(), encoding="utf-8")
-        record = {**post.to_record(), "via": via}
-        if file_md5 and file_md5 != post.md5:
-            record["file_md5"] = file_md5
+        record = {**post.to_record(), "file": self._target(post).name, "width": size[0], "height": size[1], "via": via}
         metadata.write(json.dumps(record, ensure_ascii=False) + "\n")
         metadata.flush()
         self.result.downloaded += 1
@@ -211,20 +241,21 @@ class Downloader:
     async def _mirror_worker(self, progress: DownloadProgress, metadata: IO[str]) -> None:
         while (post := await self._mirror_queue.get()) is not None:
             try:
-                file_md5 = await self._download_from_mirror(post)
+                size = await self._download_from_mirror(post)
             except Exception:
-                file_md5 = None
-            if file_md5:
+                size = None
+            if size:
                 self.result.from_mirror += 1
-                self._record(post, "mirror", metadata, progress, file_md5)
+                self._record(post, "mirror", size, metadata, progress)
             else:
                 await self._cdn_queue.put(post)
 
     async def _cdn_worker(self, progress: DownloadProgress, metadata: IO[str]) -> None:
         while (post := await self._cdn_queue.get()) is not None:
+            self._cdn_started += 1
             try:
-                await self._download_from_cdn(post)
-                self._record(post, "cdn", metadata, progress)
+                size = await self._download_from_cdn(post)
+                self._record(post, "cdn", size, metadata, progress)
             except Exception as e:
                 self.result.failed.append((post, str(e) or type(e).__name__))
                 progress.advance()
@@ -238,16 +269,24 @@ class Downloader:
                 self._streamed_bytes += len(chunk)
         return digest.hexdigest()
 
-    def _paths(self, post: Post) -> tuple[Path, Path]:
-        target = self.out_dir / post.filename
-        return target, target.with_name(target.name + ".part")
+    def _target(self, post: Post) -> Path:
+        return self.out_dir / f"{post.key}.webp"
 
-    async def _download_from_mirror(self, post: Post) -> str | None:
+    async def _cdn_turn(self) -> None:
+        if self._cdn_expected < CDN_BURST_MAX and self._cdn_started < CDN_BURST_MAX:
+            return
+        now = time.monotonic()
+        slot = max(self._next_cdn_slot, now)
+        self._next_cdn_slot = slot + 1 / CDN_PACED_RATE
+        await asyncio.sleep(slot - now)
+
+    async def _download_from_mirror(self, post: Post) -> tuple[int, int] | None:
         assert self.mirror is not None
-        entry = await self.mirror.find(post)
+        entry = self.mirror.find(post)
         if entry is None:
             return None
-        target, part = self._paths(post)
+        target = self._target(post)
+        part = target.with_name(target.name + ".part")
         byte_range = {"Range": f"bytes={entry.offset}-{entry.offset + entry.size - 1}"}
         shard = self.mirror.shard_of(post)
         for attempt in range(MIRROR_ATTEMPTS):
@@ -256,27 +295,28 @@ class Downloader:
                 async with self.client.stream("GET", url, headers=byte_range) as response:
                     if response.status_code != 206:
                         continue
-                    file_md5 = await self._write_stream(response, part)
+                    await self._write_stream(response, part)
             except httpx.TransportError:
                 await asyncio.sleep(2**attempt)
                 continue
-            is_original = file_md5 == post.md5
-            is_lossless_copy = part.stat().st_size == entry.size and has_dimensions(part, post.width, post.height)
-            if is_original or is_lossless_copy:
+            size = image_size(part) if part.stat().st_size == entry.size else None
+            if size and same_aspect(size, post):
                 os.replace(part, target)
                 self.result.total_bytes += entry.size
-                return file_md5
+                return size
             break
         part.unlink(missing_ok=True)
         return None
 
-    async def _download_from_cdn(self, post: Post) -> None:
-        target, part = self._paths(post)
+    async def _download_from_cdn(self, post: Post) -> tuple[int, int]:
+        target = self._target(post)
+        part = self.out_dir / f"{post.filename}.part"
         gate = gate_for(post.file_url)
         error = ""
         attempt = rate_limited = 0
         while attempt < MAX_ATTEMPTS:
             await gate.wait()
+            await self._cdn_turn()
             try:
                 async with self.client.stream("GET", post.file_url) as response:
                     if response.status_code == 429 and rate_limited < MAX_RATE_LIMIT_RETRIES:
@@ -292,9 +332,9 @@ class Downloader:
                     file_md5 = await self._write_stream(response, part)
                 if post.md5 and file_md5 != post.md5:
                     raise RetryableError("md5 校验失败")
-                os.replace(part, target)
+                size = await asyncio.to_thread(convert_to_webp, part, target)
                 self.result.total_bytes += target.stat().st_size
-                return
+                return size
             except (httpx.TransportError, RetryableError) as e:
                 error = str(e) or type(e).__name__
                 attempt += 1

@@ -11,8 +11,8 @@ from ..core.dataset import dataset_name
 from ..core.formatting import human_size
 from ..core.net import RATE_LIMIT_PAUSE, RequestError, make_client, total_pauses
 from .booru import BooruError, Danbooru, Estimate, TagInfo
-from .downloader import DownloadResult, Downloader, load_downloaded_keys
-from .mirror import REPO, SNAPSHOT_MAX_ID, Mirror, MirrorError
+from .downloader import CDN_BURST_MAX, CDN_PACED_RATE, DownloadResult, Downloader, load_downloaded_keys
+from .mirror import REPO, Mirror, MirrorError
 
 SEARCH_CONCURRENCY = 4
 MIRROR_MIN_IMAGES = 200
@@ -90,14 +90,15 @@ async def prepare_mirror(client: httpx.AsyncClient, booru: Danbooru, tags: str, 
         return None
 
     mirror = Mirror(client, config.hf_token, config.cache_dir)
-    with console.status("正在检查 HF 镜像 ..."):
+    with console.status("正在检查 HF 镜像 (首次使用需下载约 80MB 索引) ..."):
         try:
             await mirror.verify_access()
+            await mirror.load_index()
         except (MirrorError, RequestError) as e:
             console.print(f"[yellow]{e}，本次只从 Danbooru 下载")
             return None
         try:
-            covered_posts = await booru.count(f"{tags} id:<={SNAPSHOT_MAX_ID}")
+            covered_posts = await booru.count(f"{tags} id:<={mirror.max_id}")
         except (BooruError, RequestError):
             console.print(f"HF 镜像 ({REPO}) 已启用，镜像中有的图片优先从镜像下载")
             return mirror, 0.5
@@ -158,16 +159,19 @@ async def download(tags: str, output: Path | None, limit: int | None, workers: i
         expected_images = max(estimate.image_count - downloaded_count, 0)
         planned = min(expected_images, limit) if limit else expected_images
         mirror_plan = await prepare_mirror(client, booru, tags, estimate, planned, use_mirror, config)
+        mirror, mirror_share = mirror_plan or (None, 0.0)
+        cdn_expected = planned - round(planned * mirror_share)
+        if cdn_expected >= CDN_BURST_MAX:
+            console.print(f"约 {cdn_expected:,} 张需从 Danbooru CDN 下载，按每秒 {CDN_PACED_RATE} 个请求限速")
 
         if not yes and not confirm("是否开始下载?"):
             console.print("已取消")
             return 0
 
-        mirror, mirror_share = mirror_plan or (None, 0.0)
         downloader = Downloader(client, out_dir, console, workers or config.cdn_workers,
                                 mirror=mirror, mirror_workers=config.mirror_workers)
         try:
-            result = await downloader.run(booru, tags, expected_images, limit, mirror_share)
+            result = await downloader.run(booru, tags, expected_images, limit, mirror_share, cdn_expected)
         except (BooruError, RequestError) as e:
             console.print(f"[red]{e}")
             result = downloader.result
