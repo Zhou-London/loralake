@@ -69,6 +69,8 @@ def main(
     workers: Annotated[Optional[int], typer.Option(min=1)] = None,
     yes: Annotated[bool, typer.Option("--yes", "-y")] = False,
     use_mirror: Annotated[Optional[bool], typer.Option("--mirror/--no-mirror")] = None,
+    include: Annotated[Optional[str], typer.Option(metavar="TAGS")] = None,
+    exclude: Annotated[Optional[str], typer.Option(metavar="TAGS")] = None,
     trigger: Annotated[Optional[str], typer.Option()] = None,
     remove_tags: Annotated[Optional[str], typer.Option(metavar="TAGS")] = None,
     exclude_images: Annotated[Optional[str], typer.Option(metavar="TAGS")] = None,
@@ -114,4 +116,5 @@ def main(
     query = " ".join([first_tag, *(extra_tags or [])])
     if search_tag:
         raise typer.Exit(run_async(search(query, limit or DEFAULT_SEARCH_LIMIT, config)))
-    raise typer.Exit(run_async(download(query, output, limit, workers, yes, use_mirror, config)))
+    filters = {"include": tag_list(include) or frozenset(), "exclude": tag_list(exclude) or frozenset()}
+    raise typer.Exit(run_async(download(query, output, limit, workers, yes, use_mirror, config, **filters)))

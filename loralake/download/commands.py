@@ -10,7 +10,7 @@ from ..core.console import confirm, console
 from ..core.dataset import dataset_name
 from ..core.formatting import human_size
 from ..core.net import RATE_LIMIT_PAUSE, RequestError, make_client, total_pauses
-from .booru import BooruError, Danbooru, Estimate, TagInfo
+from .booru import BooruError, Danbooru, Estimate, QueryPlan, TagInfo
 from .downloader import CDN_BURST_MAX, CDN_PACED_RATE, DownloadResult, Downloader, load_downloaded_keys
 from .mirror import REPO, Mirror, MirrorError
 
@@ -120,6 +120,14 @@ def print_estimate(tags: str, estimate: Estimate) -> None:
     console.print(table)
 
 
+def print_query_plan(plan: QueryPlan) -> None:
+    console.print(f"服务端搜索: {plan.server}")
+    local = [f"包含 {', '.join(sorted(plan.local_include))}"] if plan.local_include else []
+    local += [f"排除 {', '.join(sorted(plan.local_exclude))}"] if plan.local_exclude else []
+    if local:
+        console.print(f"本地过滤 (超出账号 tag 数量限制的部分): {' · '.join(local)}")
+
+
 def print_download_result(result: DownloadResult) -> None:
     sources = f"，镜像 {result.from_mirror:,} / CDN {result.from_cdn:,}" if result.from_mirror else ""
     console.print(f"[green]完成: 新下载 {result.downloaded:,} 张 ({human_size(result.total_bytes)}{sources})，跳过 {result.skipped:,} 张")
@@ -135,16 +143,22 @@ def print_download_result(result: DownloadResult) -> None:
 
 
 async def download(tags: str, output: Path | None, limit: int | None, workers: int | None,
-                   yes: bool, use_mirror: bool | None, config: Config) -> int:
+                   yes: bool, use_mirror: bool | None, config: Config,
+                   include: frozenset[str] = frozenset(), exclude: frozenset[str] = frozenset()) -> int:
     out_dir = output or config.dataset_dir / dataset_name(tags)
     async with make_client(config) as client:
         booru = Danbooru(client, config)
         with console.status("正在查询 ..."):
             try:
+                if include or exclude:
+                    plan = await booru.plan_query(tags, include, exclude)
+                    tags = plan.server
                 estimate = await booru.estimate(tags)
             except (BooruError, RequestError) as e:
                 console.print(f"[red]{e}")
                 return 1
+        if include or exclude:
+            print_query_plan(plan)
         print_estimate(tags, estimate)
         if estimate.image_count == 0:
             console.print("[yellow]没有可下载的图片")

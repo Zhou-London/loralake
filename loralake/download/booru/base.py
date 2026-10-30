@@ -60,6 +60,13 @@ class Sample:
 
 
 @dataclass
+class QueryPlan:
+    server: str
+    local_include: frozenset[str] = frozenset()
+    local_exclude: frozenset[str] = frozenset()
+
+
+@dataclass
 class TagInfo:
     name: str
     category: str
@@ -99,6 +106,12 @@ class Booru:
         self.config = config
         self._first_pages: list[Page] = []
         self._fully_fetched = False
+        self.local_include: frozenset[str] = frozenset()
+        self.local_exclude: frozenset[str] = frozenset()
+
+    def keeps(self, post: Post) -> bool:
+        tags = {tag for names in post.tags.values() for tag in names}
+        return self.local_include <= tags and not self.local_exclude & tags
 
     async def get_json(self, url: str, params: dict[str, Any]) -> Any:
         response = await request(self.client, "GET", url, params=params)
@@ -127,6 +140,9 @@ class Booru:
         raise NotImplementedError
 
     async def search_tags(self, query: str, limit: int) -> list[TagInfo]:
+        raise NotImplementedError
+
+    async def plan_query(self, tags: str, include: frozenset[str], exclude: frozenset[str]) -> QueryPlan:
         raise NotImplementedError
 
     async def estimate(self, tags: str) -> Estimate:

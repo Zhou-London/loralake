@@ -1,7 +1,9 @@
 from typing import Any
 
-from .base import IMAGE_EXTENSIONS, TAG_CATEGORIES, Booru, Page, Post, Sample, TagInfo
+from .base import IMAGE_EXTENSIONS, TAG_CATEGORIES, Booru, BooruError, Page, Post, QueryPlan, Sample, TagInfo
 
+DEFAULT_TAG_LIMIT = 2
+FREE_METATAGS = ("id:", "rating:")
 CATEGORY_NAMES = {0: "general", 1: "artist", 3: "copyright", 4: "character", 5: "meta"}
 RATING_NAMES = {"g": "general", "s": "sensitive", "q": "questionable", "e": "explicit"}
 POST_FIELDS = ",".join([
@@ -27,7 +29,37 @@ class Danbooru(Booru):
 
     async def count(self, tags: str) -> int:
         data = await self._get("counts/posts.json", {"tags": tags})
-        return int((data.get("counts") or {}).get("posts") or 0)
+        counts = data.get("counts")
+        if not isinstance(counts, dict) or "posts" not in counts:
+            raise BooruError(f"{self.name} 没有返回 \"{tags}\" 的帖子数 (统计超时或查询无效)，请稍后重试")
+        return int(counts["posts"] or 0)
+
+    async def tag_query_limit(self) -> int:
+        if not self.config.has_danbooru_auth:
+            return DEFAULT_TAG_LIMIT
+        profile = await self._get("profile.json", {})
+        return int(profile.get("tag_query_limit") or DEFAULT_TAG_LIMIT)
+
+    async def plan_query(self, tags: str, include: frozenset[str], exclude: frozenset[str]) -> QueryPlan:
+        def counts_against_limit(term: str) -> bool:
+            return not term.lstrip("-").startswith(FREE_METATAGS)
+
+        exclude = frozenset(t.lstrip("-") for t in exclude)
+        terms = [*tags.split(), *sorted(t for t in include if ":" in t), *sorted(f"-{t}" for t in exclude if ":" in t)]
+        include = frozenset(t for t in include if ":" not in t)
+        exclude = frozenset(t for t in exclude if ":" not in t)
+        slots = await self.tag_query_limit() - sum(map(counts_against_limit, terms))
+        post_counts: dict[str, int] = {}
+        if slots > 0 and include | exclude:
+            items = await self._get("tags.json", {"search[name_comma]": ",".join(include | exclude),
+                                                  "only": "name,post_count", "limit": len(include | exclude)})
+            post_counts = {item["name"]: item.get("post_count") or 0 for item in items}
+        rarest_includes = sorted(include, key=lambda t: post_counts.get(t, 0))
+        largest_excludes = sorted(exclude, key=lambda t: -post_counts.get(t, 0))
+        server = [*rarest_includes, *(f"-{t}" for t in largest_excludes)][:max(slots, 0)]
+        self.local_include = include - set(server)
+        self.local_exclude = exclude - {t[1:] for t in server}
+        return QueryPlan(" ".join([*terms, *server]), self.local_include, self.local_exclude)
 
     async def fetch_page(self, tags: str, before_id: int | None) -> Page:
         params: dict[str, Any] = {"tags": tags, "limit": self.page_size, "only": POST_FIELDS}
@@ -84,7 +116,7 @@ class Danbooru(Booru):
         return list(found.values())
 
     def _parse_posts(self, items: list[dict[str, Any]]) -> list[Post]:
-        return [post for post in map(self._parse_post, items) if post]
+        return [post for post in map(self._parse_post, items) if post and self.keeps(post)]
 
     def _parse_post(self, item: dict[str, Any]) -> Post | None:
         file_ext = (item.get("file_ext") or "").lower()
