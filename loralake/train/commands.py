@@ -14,9 +14,10 @@ from ..preprocess.anima import AnimaCaptionOptions, anima_caption
 from ..preprocess.commands import print_selection
 from ..preprocess.selection import select_records
 from ..preprocess.views import materialize_view
-from . import sdscripts
+from . import diffpipe
+from .buckets import BucketPlan, image_aspect_ratio, plan_buckets
 from .models import AnimaModels, ModelNotFoundError, locate_anima_models
-from .settings import TrainSettings, dataset_config, missing_optimizer_package, to_toml, training_config
+from .settings import TrainSettings, dataset_config, to_toml, training_config
 
 DATASET_CONFIG_FILE = "dataset.toml"
 TRAIN_CONFIG_FILE = "train.toml"
@@ -38,8 +39,8 @@ def _json_default(value: object) -> Any:
 
 
 def write_manifest(run_dir: Path, dataset_dir: Path, images: int, exclude_images: frozenset[str],
-                   caption_options: AnimaCaptionOptions, settings: TrainSettings, models: AnimaModels,
-                   preset: Path | None) -> None:
+                   caption_options: AnimaCaptionOptions, settings: TrainSettings, buckets: BucketPlan,
+                   models: AnimaModels, preset: Path | None) -> None:
     manifest = {
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "preset": preset,
@@ -48,20 +49,25 @@ def write_manifest(run_dir: Path, dataset_dir: Path, images: int, exclude_images
         "exclude_images": exclude_images,
         "caption": asdict(caption_options),
         "settings": asdict(settings),
+        "buckets": asdict(buckets),
         "models": asdict(models),
-        "sd_scripts_commit": sdscripts.commit(),
+        "diffusion_pipe_commit": diffpipe.commit(),
     }
     (run_dir / MANIFEST_FILE).write_text(json.dumps(manifest, ensure_ascii=False, indent=2, default=_json_default),
                                          encoding="utf-8")
 
 
-def print_plan(images: int, trigger: str, settings: TrainSettings, models: AnimaModels, run_dir: Path) -> None:
+def print_plan(images: int, trigger: str, settings: TrainSettings, buckets: BucketPlan, models: AnimaModels,
+               run_dir: Path) -> None:
     table = Table(show_header=False, box=None, padding=(0, 2))
     table.add_column(no_wrap=True)
     table.add_column(overflow="fold")
     table.add_row("图片", f"{images:,} 张")
     table.add_row("触发词", trigger or "[dim]无[/]")
-    table.add_row("训练量", f"{settings.epochs} 个 epoch × batch {settings.batch_size}（约 {settings.estimated_steps(images):,} 步）")
+    table.add_row("训练量", f"{settings.epochs} 个 epoch × batch {settings.batch_size}"
+                            f"（{buckets.steps_per_epoch * settings.epochs:,} 步）")
+    table.add_row("分桶", f"{len(buckets.aspect_ratios)} 种宽高比，每个 epoch 丢弃 {buckets.dropped} 张，"
+                          f"平均裁切 {buckets.mean_crop:.1%}")
     table.add_row("LoRA", f"rank {settings.rank}，学习率 {settings.learning_rate:g}，{settings.optimizer}")
     table.add_row("分辨率", f"{settings.resolution}，每 {settings.save_every_epochs} 个 epoch 保存一次"
                             + ("，梯度检查点" if settings.gradient_checkpointing else ""))
@@ -70,28 +76,13 @@ def print_plan(images: int, trigger: str, settings: TrainSettings, models: Anima
     console.print(table)
 
 
-def convert_checkpoints(checkpoint_dir: Path, run_dir: Path, final_epoch: int) -> list[Path]:
-    duplicate_of_final = f"{run_dir.name}-{final_epoch:06d}.safetensors"
-    converted = []
-    for checkpoint in sorted(checkpoint_dir.glob("*.safetensors")):
-        if checkpoint.name == duplicate_of_final:
-            continue
-        target = run_dir / checkpoint.name
-        sdscripts.convert_to_comfy(checkpoint, target)
-        converted.append(target)
-    return converted
-
-
 def train(dataset: str, exclude_images: frozenset[str], caption_options: AnimaCaptionOptions,
           settings: TrainSettings, preset: Path | None, name: str | None, yes: bool, config: Config) -> int:
     try:
-        sdscripts.ensure_installed()
+        diffpipe.ensure_installed()
         models = locate_anima_models(config)
-    except (sdscripts.SdScriptsError, ModelNotFoundError) as e:
+    except (diffpipe.DiffusionPipeError, ModelNotFoundError) as e:
         console.print(f"[red]{e}")
-        return 1
-    if package := missing_optimizer_package(settings.optimizer):
-        console.print(f"[red]优化器 {settings.optimizer} 需要 {package}，请在 ComfyUI 环境中安装: pip install --no-deps {package}")
         return 1
     dataset_dir = resolve_dataset(dataset, config.dataset_dir)
     if dataset_dir is None:
@@ -109,7 +100,12 @@ def train(dataset: str, exclude_images: frozenset[str], caption_options: AnimaCa
     if run_dir.exists():
         console.print(f"[red]输出目录已存在: {run_dir}，请用 --name 指定其他名称")
         return 1
-    print_plan(len(selection.records), caption_options.trigger, settings, models, run_dir)
+    buckets = plan_buckets((image_aspect_ratio(dataset_dir / record.file) for record in selection.records),
+                           settings.batch_size)
+    if buckets.steps_per_epoch == 0:
+        console.print(f"[red]图片数少于 batch 大小 {settings.batch_size}，请用 --batch-size 调小")
+        return 1
+    print_plan(len(selection.records), caption_options.trigger, settings, buckets, models, run_dir)
     if not yes and not confirm("是否开始训练?"):
         console.print("已取消")
         return 0
@@ -123,28 +119,30 @@ def train(dataset: str, exclude_images: frozenset[str], caption_options: AnimaCa
     checkpoint_dir.mkdir(parents=True)
     dataset_config_file = run_dir / DATASET_CONFIG_FILE
     train_config_file = run_dir / TRAIN_CONFIG_FILE
-    dataset_config_file.write_text(dataset_config(view.path, settings), encoding="utf-8")
+    dataset_config_file.write_text(dataset_config(view.path, settings, buckets), encoding="utf-8")
     train_config_file.write_text(
-        to_toml(training_config(models, settings, dataset_config_file, checkpoint_dir, run_dir.name)), encoding="utf-8")
-    write_manifest(run_dir, dataset_dir, len(selection.records), exclude_images, caption_options, settings, models, preset)
+        to_toml(training_config(models, settings, dataset_config_file, checkpoint_dir)), encoding="utf-8")
+    write_manifest(run_dir, dataset_dir, len(selection.records), exclude_images, caption_options, settings, buckets,
+                   models, preset)
 
     log_file = run_dir / LOG_FILE
     try:
-        exit_code = sdscripts.run_training(train_config_file, log_file, console)
+        exit_code = diffpipe.run_training(train_config_file, log_file, buckets.steps_per_epoch * settings.epochs,
+                                          console)
     except KeyboardInterrupt:
         console.print(f"\n[yellow]训练已中断。已保存的中间版本在 {checkpoint_dir}")
         return 130
     if exit_code != 0:
         console.print(f"[red]训练失败 (exit {exit_code})，日志: {log_file}")
-        console.print(Text(sdscripts.log_tail(log_file), style="dim"))
+        console.print(Text(diffpipe.log_tail(log_file), style="dim"))
         return exit_code
 
-    with console.status("正在转换为 ComfyUI 格式 ..."):
-        try:
-            outputs = convert_checkpoints(checkpoint_dir, run_dir, settings.epochs)
-        except sdscripts.SdScriptsError as e:
-            console.print(f"[red]{e}")
-            return 1
+    try:
+        outputs = diffpipe.collect_adapters(checkpoint_dir, run_dir, settings.epochs)
+    except diffpipe.DiffusionPipeError as e:
+        console.print(f"[red]{e}")
+        return 1
+    diffpipe.remove_training_state(checkpoint_dir)
     console.print(f"[green]训练完成，LoRA 已保存到 {run_dir}")
     for output in outputs:
         console.print(f"  {output.name}")

@@ -2,3 +2,4 @@ datasets/
 *cache*
 derived/
 output/
+*.egg-info/

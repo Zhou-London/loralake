@@ -1,6 +1,6 @@
 # loralake
 
-从 Danbooru 下载图片、整理 caption、用 sd-scripts 训练 Anima LoRA 的命令行工具。
+从 Danbooru 下载图片、整理 caption、用 [diffusion-pipe](https://github.com/tdrussell/diffusion-pipe) 训练 Anima LoRA 的命令行工具。在 WSL2（Ubuntu）下运行。
 
 典型流程：
 
@@ -13,25 +13,38 @@ llk -t hatsune_miku              # 训练，结果在 output/
 
 ## 安装与配置
 
-1. 初始化 sd-scripts 子模块：
+仓库放在 WSL 的 Linux 文件系统里（如 `~/loralake`），不要放在 `/mnt/c` 下，否则缓存和训练的读写会很慢。
+
+1. 初始化 diffusion-pipe 子模块（它自己还有子模块）：
 
    ```bash
-   git submodule update --init
+   git submodule update --init --recursive
    ```
 
-2. 在仓库根目录的 `config` 文件里填写配置（`KEY=VALUE`，`#` 开头为注释）。
-3. Windows 下用仓库根目录的 `llk.cmd` 运行，它会用 `PYTHON_PATH` 指定的 Python（通常是 ComfyUI 的 venv）执行 `python -m loralake`。依赖见 `requirements.txt`。
+2. 用 conda（[Miniforge](https://github.com/conda-forge/miniforge)）建环境。diffusion-pipe 依赖的 ComfyUI 要求 torch 用 CUDA 13.0 的版本：
+
+   ```bash
+   conda create -n loralake python=3.12
+   conda activate loralake
+   conda install -c conda-forge cuda-nvcc=13.0
+   pip install torch==2.9.0 torchvision==0.24.0 torchaudio==2.9.0 --index-url https://download.pytorch.org/whl/cu130
+   pip install -r third_party/diffusion-pipe/requirements.txt
+   pip install -e .
+   ```
+
+   之后在 `conda activate loralake` 的终端里直接运行 `llk`。
+
+3. 在仓库根目录的 `config` 文件里填写配置（`KEY=VALUE`，`#` 开头为注释）。Windows 上的路径写成 `/mnt/c/...`。
 
 | 配置项 | 说明 | 默认 |
 |---|---|---|
-| `PYTHON_PATH` | 运行 llk 的 Python，一般指向 ComfyUI 的 `.venv\Scripts\python.exe` | `python` |
 | `DANBOORU_LOGIN` / `DANBOORU_API_KEY` | Danbooru 用户名和 API key，需同时填写 | 匿名 |
 | `HF_API_KEY` | Hugging Face token，用于 HF 镜像下载；需先在数据集页面同意访问条款 | 读取环境变量 `HF_TOKEN` |
 | `PROXY` | HTTP 代理地址 | 无 |
 | `DOWNLOAD_WORKERS` | Danbooru CDN 并发数 | 8 |
 | `MIRROR_WORKERS` | HF 镜像并发数 | 32 |
 | `DATASET_DIR` / `DERIVED_DIR` / `OUTPUT_DIR` | 数据集、训练视图、训练输出目录（相对路径以仓库根目录为准） | `datasets` / `derived` / `output` |
-| `COMFY_MODELS_PATH` | ComfyUI 的 `models` 目录；不填时按 `PYTHON_PATH` 推断 | 推断 |
+| `COMFY_MODELS_PATH` | ComfyUI 的 `models` 目录，如 `/mnt/c/Users/<用户名>/Documents/ComfyUI/models` | 无 |
 | `ANIMA_DIT` / `ANIMA_QWEN3` / `ANIMA_VAE` | 直接指定底模、文本编码器、VAE 文件，不填则在 models 目录中自动查找 | 自动 |
 
 ## 搜索 tag：`-s` / `--search`
@@ -113,7 +126,9 @@ llk -t hatsune_miku
 llk -t hatsune_miku --trigger miku --epochs 15 --name miku_v1
 ```
 
-自动生成训练视图和 sd-scripts 配置，训练完成后把各 epoch 的 LoRA 转成 ComfyUI 格式，保存在 `output/<name>/`。底模、Qwen3 文本编码器和 VAE 默认在 ComfyUI 的 `models/diffusion_models`、`models/text_encoders`、`models/vae` 下查找。
+自动生成训练视图和 diffusion-pipe 配置，训练完成后把各 epoch 的 LoRA（本身就是 ComfyUI 格式）移到 `output/<name>/`：最后一个 epoch 是 `<name>.safetensors`，中间版本是 `<name>-<epoch>.safetensors`。diffusion-pipe 的配置副本和 TensorBoard 日志在 `output/<name>/checkpoints/`（训练成功后会删掉 DeepSpeed 的训练状态，不支持续训），latent 和文本缓存在训练视图目录的 `cache/` 下。LLM adapter 不参与训练（`llm_adapter_lr = 0`，与官方示例一致）。
+
+diffusion-pipe 按宽高比分桶，每个桶只保留 batch 大小整数倍的图片，凑不满的直接丢弃。llk 会读取每张图的实际尺寸，按 diffusion-pipe 的分桶规则（进入 log 空间中最近的宽高比）模拟，选出最多 9 个宽高比，使丢弃的图片数加上被裁掉的面积最小，写入 `dataset.toml` 的 `ar_buckets`。开始前会显示分桶数、每个 epoch 丢弃的张数和平均裁切比例；丢弃数通常等于图片总数除以 batch 的余数。底模、Qwen3 文本编码器和 VAE 默认在 ComfyUI 的 `models/diffusion_models`、`models/text_encoders`、`models/vae` 下查找。
 
 | 选项 | 说明 | 默认（`presets/default.yaml`） |
 |---|---|---|
@@ -150,9 +165,8 @@ train:
   batch_size: 4
   resolution: 768
   save_every_epochs: 5
-  seed: 42
-  optimizer: AdamW8bit
-  caption_dropout: 0.05
+  optimizer: adamw_optimi # diffusion-pipe 的优化器名，也可用 AdamW8bit、AdamW8bitKahan、Prodigy 等
+  caption_dropout: 0.05   # 以空 caption 训练的比例（diffusion-pipe 的 uncond_fraction）
   gradient_checkpointing: true
 ```
 

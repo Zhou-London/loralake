@@ -50,11 +50,6 @@ def _owner_stem(file: Path) -> str | None:
     return match.group(1) if match else None
 
 
-def _remove_derived_caches(view_dir: Path, stem: str) -> None:
-    for cache in view_dir.glob(f"{stem}_*.npz"):
-        cache.unlink()
-
-
 def materialize_view(dataset_dir: Path, records: Iterable[Record], view_dir: Path,
                      caption: Callable[[Record], str]) -> ViewSummary:
     view_dir.mkdir(parents=True, exist_ok=True)
@@ -65,7 +60,6 @@ def materialize_view(dataset_dir: Path, records: Iterable[Record], view_dir: Pat
         image = view_dir / record.file
         expected_stems.add(image.stem)
         if not _same_content(source, image):
-            _remove_derived_caches(view_dir, image.stem)
             if _link_or_copy(source, image):
                 summary.linked += 1
             else:

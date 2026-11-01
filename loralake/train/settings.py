@@ -1,13 +1,14 @@
-import importlib.util
 import json
-import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from .buckets import BucketPlan
 from .models import AnimaModels
 
-TomlValue = str | int | float | bool
+TomlScalar = str | int | float | bool
+TomlValue = TomlScalar | list[TomlScalar]
+TomlTable = Mapping[str, "TomlValue | TomlTable"]
 
 
 @dataclass(frozen=True)
@@ -18,25 +19,14 @@ class TrainSettings:
     batch_size: int = 4
     resolution: int = 1024
     save_every_epochs: int = 2
-    seed: int = 42
-    optimizer: str = "AdamW8bit"
+    optimizer: str = "adamw_optimi"
     caption_dropout: float = 0.0
     gradient_checkpointing: bool = True
 
-    def estimated_steps(self, images: int) -> int:
-        return math.ceil(images / self.batch_size) * self.epochs
-
-
-OPTIMIZER_PACKAGES = {"bitsandbytes": "8bit", "prodigyopt": "prodigy", "lion_pytorch": "lion", "schedulefree": "schedulefree"}
-
-
-def missing_optimizer_package(optimizer: str) -> str | None:
-    name = optimizer.lower()
-    required = next((package for package, marker in OPTIMIZER_PACKAGES.items() if marker in name), None)
-    return required if required and importlib.util.find_spec(required) is None else None
-
 
 def _toml_value(value: TomlValue) -> str:
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, (int, float)):
@@ -44,53 +34,53 @@ def _toml_value(value: TomlValue) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def to_toml(values: Mapping[str, TomlValue]) -> str:
-    return "".join(f"{key} = {_toml_value(value)}\n" for key, value in values.items())
+def to_toml(table: TomlTable) -> str:
+    scalars = "".join(f"{key} = {_toml_value(value)}\n"
+                      for key, value in table.items() if not isinstance(value, Mapping))
+    sections = [f"[{key}]\n" + to_toml(value) for key, value in table.items() if isinstance(value, Mapping)]
+    return "\n".join([scalars, *sections])
 
 
-def dataset_config(view_dir: Path, settings: TrainSettings) -> str:
+def dataset_config(view_dir: Path, settings: TrainSettings, buckets: BucketPlan) -> str:
     general: dict[str, TomlValue] = {
-        "caption_extension": ".txt",
-        "enable_bucket": True,
-        "bucket_no_upscale": True,
-        "caption_dropout_rate": settings.caption_dropout,
+        "resolutions": [settings.resolution],
+        "enable_ar_bucket": True,
+        "ar_buckets": list(buckets.aspect_ratios),
     }
-    dataset: dict[str, TomlValue] = {"resolution": settings.resolution, "batch_size": settings.batch_size}
-    subset: dict[str, TomlValue] = {"image_dir": view_dir.as_posix(), "num_repeats": 1}
-    return "\n".join([
-        "[general]\n" + to_toml(general),
-        "[[datasets]]\n" + to_toml(dataset),
-        "[[datasets.subsets]]\n" + to_toml(subset),
-    ])
+    directory: dict[str, TomlValue] = {"path": view_dir.as_posix(), "num_repeats": 1}
+    return to_toml(general) + "\n[[directory]]\n" + to_toml(directory)
 
 
 def training_config(models: AnimaModels, settings: TrainSettings, dataset_config_file: Path,
-                    checkpoint_dir: Path, name: str) -> dict[str, TomlValue]:
+                    checkpoint_dir: Path) -> TomlTable:
     return {
-        "pretrained_model_name_or_path": models.dit.as_posix(),
-        "qwen3": models.qwen3.as_posix(),
-        "vae": models.vae.as_posix(),
-        "dataset_config": dataset_config_file.as_posix(),
         "output_dir": checkpoint_dir.as_posix(),
-        "output_name": name,
-        "save_model_as": "safetensors",
-        "network_module": "networks.lora_anima",
-        "network_dim": settings.rank,
-        "network_alpha": float(settings.rank),
-        "network_train_unet_only": True,
-        "optimizer_type": settings.optimizer,
-        "learning_rate": settings.learning_rate,
-        "lr_scheduler": "constant",
-        "max_train_epochs": settings.epochs,
+        "dataset": dataset_config_file.as_posix(),
+        "epochs": settings.epochs,
+        "micro_batch_size_per_gpu": settings.batch_size,
+        "pipeline_stages": 1,
+        "gradient_accumulation_steps": 1,
+        "gradient_clipping": 1.0,
         "save_every_n_epochs": settings.save_every_epochs,
-        "timestep_sampling": "sigmoid",
-        "mixed_precision": "bf16",
-        "save_precision": "bf16",
-        "gradient_checkpointing": settings.gradient_checkpointing,
-        "cache_latents": True,
-        "cache_latents_to_disk": True,
-        "cache_text_encoder_outputs": True,
-        "qwen_image_vae_2d": True,
-        "max_data_loader_n_workers": 0,
-        "seed": settings.seed,
+        "activation_checkpointing": settings.gradient_checkpointing,
+        "uncond_fraction": settings.caption_dropout,
+        "save_dtype": "bfloat16",
+        "caching_batch_size": settings.batch_size,
+        "steps_per_print": 1,
+        "model": {
+            "type": "anima",
+            "transformer_path": models.dit.as_posix(),
+            "vae_path": models.vae.as_posix(),
+            "llm_path": models.qwen3.as_posix(),
+            "dtype": "bfloat16",
+            "llm_adapter_lr": 0,
+        },
+        "adapter": {"type": "lora", "rank": settings.rank, "dtype": "bfloat16"},
+        "optimizer": {
+            "type": settings.optimizer,
+            "lr": settings.learning_rate,
+            "betas": [0.9, 0.99],
+            "weight_decay": 0.01,
+            "eps": 1e-8,
+        },
     }
