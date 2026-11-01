@@ -1,14 +1,16 @@
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
 import httpx
 
 from ...core.config import Config
+from ...core.dataset import Record
 from ...core.net import request
 
 IMAGE_EXTENSIONS = frozenset({"jpg", "jpeg", "png", "webp"})
 TAG_CATEGORIES = ("artist", "character", "copyright", "general", "meta")
+NON_FILTERING_METATAGS = ("order:", "limit:")
 
 
 class BooruError(Exception):
@@ -98,6 +100,7 @@ def tally(sample: Sample) -> Estimate:
 
 class Booru:
     name: str = ""
+    rating_names: dict[str, str] = {}
     page_size: int = 100
     max_estimate_pages: int = 1
 
@@ -112,6 +115,38 @@ class Booru:
     def keeps(self, post: Post) -> bool:
         tags = {tag for names in post.tags.values() for tag in names}
         return self.local_include <= tags and not self.local_exclude & tags
+
+    def _ratings(self, value: str) -> set[str] | None:
+        names = set()
+        for part in value.split(","):
+            name = self.rating_names.get(part[:1], "")
+            if not part or not name.startswith(part):
+                return None
+            names.add(name)
+        return names
+
+    def local_matcher(self, tags: str) -> Callable[[Record], bool] | None:
+        """Replays the query against saved records; None if it uses syntax that can't be checked locally."""
+        include, exclude = set(self.local_include), set(self.local_exclude)
+        ratings = set(self.rating_names.values())
+        for term in tags.lower().split():
+            negated, term = term.startswith("-"), term.removeprefix("-")
+            if term.startswith(NON_FILTERING_METATAGS):
+                continue
+            if term.startswith("rating:"):
+                if (names := self._ratings(term.removeprefix("rating:"))) is None:
+                    return None
+                ratings = ratings - names if negated else ratings & names
+            elif ":" in term or "*" in term or term.startswith("~") or term in ("", "(", ")", "or"):
+                return None
+            else:
+                (exclude if negated else include).add(term)
+
+        def matches(record: Record) -> bool:
+            record_tags = {tag for names in record.tags.values() for tag in names}
+            return record.rating in ratings and include <= record_tags and not exclude & record_tags
+
+        return matches
 
     async def get_json(self, url: str, params: dict[str, Any]) -> Any:
         response = await request(self.client, "GET", url, params=params)

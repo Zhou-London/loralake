@@ -7,11 +7,11 @@ from rich.text import Text
 
 from ..core.config import Config
 from ..core.console import confirm, console
-from ..core.dataset import dataset_name
+from ..core.dataset import available_records, dataset_name
 from ..core.formatting import human_size
 from ..core.net import RATE_LIMIT_PAUSE, RequestError, make_client, total_pauses
 from .booru import BooruError, Danbooru, Estimate, QueryPlan, TagInfo
-from .downloader import CDN_BURST_MAX, CDN_PACED_RATE, DownloadResult, Downloader, load_downloaded_keys
+from .downloader import CDN_BURST_MAX, CDN_PACED_RATE, DownloadResult, Downloader
 from .mirror import REPO, Mirror, MirrorError
 
 SEARCH_CONCURRENCY = 4
@@ -164,10 +164,15 @@ async def download(tags: str, output: Path | None, limit: int | None, workers: i
             console.print("[yellow]没有可下载的图片")
             return 0
 
-        downloaded_count = len(load_downloaded_keys(out_dir))
+        # The directory may also hold images from other queries; only count the ones this query returns.
+        local_records = available_records(out_dir)
+        matches = booru.local_matcher(tags)
+        downloaded_count = sum(map(matches, local_records)) if matches else 0
         console.print(f"保存目录: {out_dir}")
         if downloaded_count:
-            console.print(f"本地已有 {downloaded_count:,} 张，将跳过")
+            console.print(f"本地已有本次查询的 {downloaded_count:,} 张，将跳过")
+        elif local_records:
+            console.print(f"目录中已有 {len(local_records):,} 张，与本次查询重复的会跳过")
         if limit:
             console.print(f"本次最多下载 {limit:,} 张")
         expected_images = max(estimate.image_count - downloaded_count, 0)

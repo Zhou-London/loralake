@@ -15,6 +15,7 @@ TAG_FIELDS = "name,post_count,category"
 
 class Danbooru(Booru):
     name = "danbooru"
+    rating_names = RATING_NAMES
     base_url = "https://danbooru.donmai.us"
     page_size = 200
     max_estimate_pages = 5
