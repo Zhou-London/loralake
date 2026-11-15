@@ -4,3 +4,4 @@ derived/
 output/
 *.egg-info/
 .env
+config

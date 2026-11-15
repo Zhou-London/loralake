@@ -1,0 +1,11 @@
+PROXY=
+
+COMFY_MODELS_PATH=/mnt/c/Users/Zhou/Documents/ComfyUI/models
+
+DATASET_DIR=datasets
+DOWNLOAD_WORKERS=8
+
+DANBOORU_LOGIN=
+DANBOORU_API_KEY=
+
+HF_API_KEY=
