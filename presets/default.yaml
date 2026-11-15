@@ -1,11 +1,10 @@
 preprocess:
-  trigger: ""
+  trigger: "lily (wuthering waves)"
   exclude_images:
     - ai-generated
     - ai-assisted
     - lowres
     - jpeg_artifacts
-    - lossy-lossless
     - bad_anatomy
     - bad_hands
     - bad_feet
@@ -23,10 +22,10 @@ preprocess:
 train:
   rank: 32
   learning_rate: 2.0e-5
-  epochs: 10
+  epochs: 20
   batch_size: 4
-  resolution: 768
-  save_every_epochs: 5
+  resolution: 1024
+  save_every_epochs: 2
   optimizer: adamw_optimi
-  caption_dropout: 0.05
+  caption_dropout: 0
   gradient_checkpointing: true
