@@ -1,3 +1,4 @@
+import importlib.util
 import os
 import re
 import shutil
@@ -13,7 +14,8 @@ from ..core.config import ROOT
 
 DIFFUSION_PIPE_DIR = ROOT / "third_party" / "diffusion-pipe"
 TRAIN_SCRIPT = "train.py"
-DEEPSPEED = Path(sys.executable).parent / "deepspeed"
+# 用 python -m 启动，不依赖 deepspeed 脚本装在哪个 bin 目录（conda 环境和 Colab 的系统 Python 不同）
+DEEPSPEED = [sys.executable, "-m", "deepspeed.launcher.runner"]
 ADAPTER_FILE = "adapter_model.safetensors"
 EPOCH_DIR = re.compile(r"^epoch(\d+)$")
 READ_CHUNK = 1 << 16
@@ -31,8 +33,8 @@ class DiffusionPipeError(Exception):
 def ensure_installed() -> None:
     if not (DIFFUSION_PIPE_DIR / TRAIN_SCRIPT).is_file():
         raise DiffusionPipeError(f"找不到 diffusion-pipe（{DIFFUSION_PIPE_DIR}），请运行 ./install.sh")
-    if not DEEPSPEED.is_file():
-        raise DiffusionPipeError(f"当前 Python 环境中没有 deepspeed（{DEEPSPEED}），请先运行 ./install.sh 并激活环境: conda activate loralake")
+    if importlib.util.find_spec("deepspeed") is None:
+        raise DiffusionPipeError(f"当前 Python（{sys.executable}）中没有 deepspeed，请先运行 ./install.sh；用 conda 安装的需先激活环境: conda activate loralake")
 
 
 def commit() -> str:
@@ -62,7 +64,7 @@ def _update_progress(progress: Progress, task: TaskID, line: str) -> None:
 
 
 def run_training(config_file: Path, log_file: Path, total_steps: int, console: Console) -> int:
-    command = [str(DEEPSPEED), "--num_gpus=1", TRAIN_SCRIPT, "--deepspeed", "--config", str(config_file)]
+    command = [*DEEPSPEED, "--num_gpus=1", TRAIN_SCRIPT, "--deepspeed", "--config", str(config_file)]
     progress = Progress(
         SpinnerColumn(),
         TextColumn("[bold]{task.description}"),

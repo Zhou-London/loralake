@@ -29,6 +29,7 @@ cd ~/loralake
 
 - 依赖版本默认按 [env/constraints.txt](env/constraints.txt) 锁定（一套验证过能训练的组合）。想用 diffusion-pipe 依赖的最新版：`./install.sh --latest`。
 - 环境名可用 `LORALAKE_ENV=xxx ./install.sh` 修改。
+- 不想用 conda、已经有装好 CUDA 版 PyTorch 的 Python 时：`./install.sh --system`，直接装进当前 Python，沿用已有的 torch，不使用 `env/constraints.txt`。需要能找到 `nvcc`（deepspeed 导入时要用）。
 
 之后每个新终端先激活环境再用：
 
@@ -38,6 +39,15 @@ llk --help
 ```
 
 WSL 下仓库要放在 Linux 文件系统里（如 `~/loralake`），不要放在 `/mnt/c` 下，否则缓存和训练的读写会很慢。
+
+### Google Colab
+
+用 [colab.ipynb](colab.ipynb)：上传到 Colab（或在 Colab 里从 GitHub 打开），按顺序运行即可。
+
+- 运行时类型选 L4 或更好的 GPU。T4（免费版）不支持 bf16，不适合训练。
+- `install.sh` 检测到 Colab 会自动使用 `--system` 模式，沿用 Colab 自带的 PyTorch。编写时（2026-11）Colab 的环境为 Ubuntu 24.04、Python 3.13、torch 2.14.1+cu130、驱动 580.82.07。
+- `config`、模型、数据集和训练输出放在 Google Drive 的 `MyDrive/loralake/` 下；`derived/` 和 `.cache/` 放在本地，每个新会话会重新生成。
+- 笔记本里不能交互确认，`-d` 和 `-t` 要加 `-y`。
 
 ## 配置
 
