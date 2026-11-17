@@ -1,6 +1,6 @@
 # loralake
 
-从 Danbooru 下载图片、整理 caption、用 [diffusion-pipe](https://github.com/tdrussell/diffusion-pipe) 训练 Anima LoRA 的命令行工具。在 WSL2（Ubuntu）下运行。
+从 Danbooru 下载图片、整理 caption、用 [diffusion-pipe](https://github.com/tdrussell/diffusion-pipe) 训练 Anima LoRA 的命令行工具。运行在 Ubuntu（原生或 WSL2）+ NVIDIA GPU 上。
 
 典型流程：
 
@@ -11,30 +11,37 @@ llk -p hatsune_miku              # 预览 caption
 llk -t hatsune_miku              # 训练，结果在 output/
 ```
 
-## 安装与配置
+## 安装
 
-仓库放在 WSL 的 Linux 文件系统里（如 `~/loralake`），不要放在 `/mnt/c` 下，否则缓存和训练的读写会很慢。
+前提：
 
-1. 初始化 diffusion-pipe 子模块（它自己还有子模块）：
+- Ubuntu 22.04 / 24.04（原生或 WSL2），`git` 和 `curl`（`sudo apt install -y git curl`）
+- NVIDIA 驱动 580 及以上（CUDA 13.0 的要求）。原生 Ubuntu 用 `sudo ubuntu-drivers install` 安装；WSL2 只需在 Windows 上装驱动，不要在 WSL 里装
+- Anima 底模、Qwen3 0.6B 文本编码器、Qwen-Image VAE 三个模型文件（通常已在 ComfyUI 的 `models/` 下）
 
-   ```bash
-   git submodule update --init --recursive
-   ```
+```bash
+git clone --recurse-submodules https://github.com/Zhou-London/loralake.git ~/loralake
+cd ~/loralake
+./install.sh
+```
 
-2. 用 conda（[Miniforge](https://github.com/conda-forge/miniforge)）建环境。diffusion-pipe 依赖的 ComfyUI 要求 torch 用 CUDA 13.0 的版本：
+`install.sh` 会依次：初始化 diffusion-pipe 子模块 → 没有 conda 时安装 [Miniforge](https://github.com/conda-forge/miniforge) 到 `~/miniforge3` → 创建 `loralake` 环境（Python 3.12、`cuda-nvcc` 13.0、PyTorch 2.9.0+cu130）→ 安装 diffusion-pipe 依赖和 `llk` → 从 `config.example` 生成 `config` → 检查 GPU 是否可用。脚本可重复运行，更新代码后再跑一次即可同步依赖。
 
-   ```bash
-   conda create -n loralake python=3.12
-   conda activate loralake
-   conda install -c conda-forge cuda-nvcc=13.0
-   pip install torch==2.9.0 torchvision==0.24.0 torchaudio==2.9.0 --index-url https://download.pytorch.org/whl/cu130
-   pip install -r third_party/diffusion-pipe/requirements.txt
-   pip install -e .
-   ```
+- 依赖版本默认按 [env/constraints.txt](env/constraints.txt) 锁定（一套验证过能训练的组合）。想用 diffusion-pipe 依赖的最新版：`./install.sh --latest`。
+- 环境名可用 `LORALAKE_ENV=xxx ./install.sh` 修改。
 
-   之后在 `conda activate loralake` 的终端里直接运行 `llk`。
+之后每个新终端先激活环境再用：
 
-3. 在仓库根目录的 `config` 文件里填写配置（`KEY=VALUE`，`#` 开头为注释）。Windows 上的路径写成 `/mnt/c/...`。
+```bash
+conda activate loralake
+llk --help
+```
+
+WSL 下仓库要放在 Linux 文件系统里（如 `~/loralake`），不要放在 `/mnt/c` 下，否则缓存和训练的读写会很慢。
+
+## 配置
+
+编辑仓库根目录的 `config`（`KEY=VALUE`，`#` 开头为注释；模板见 [config.example](config.example)）。至少要填 `COMFY_MODELS_PATH` 或三个 `ANIMA_*`，下载大数据集建议填 `HF_API_KEY`。
 
 | 配置项 | 说明 | 默认 |
 |---|---|---|
@@ -44,8 +51,18 @@ llk -t hatsune_miku              # 训练，结果在 output/
 | `DOWNLOAD_WORKERS` | Danbooru CDN 并发数 | 8 |
 | `MIRROR_WORKERS` | HF 镜像并发数 | 32 |
 | `DATASET_DIR` / `DERIVED_DIR` / `OUTPUT_DIR` | 数据集、训练视图、训练输出目录（相对路径以仓库根目录为准） | `datasets` / `derived` / `output` |
-| `COMFY_MODELS_PATH` | ComfyUI 的 `models` 目录，如 `/mnt/c/Users/<用户名>/Documents/ComfyUI/models` | 无 |
+| `COMFY_MODELS_PATH` | ComfyUI 的 `models` 目录。原生 Linux 如 `~/ComfyUI/models`（写绝对路径），WSL 访问 Windows 上的 ComfyUI 如 `/mnt/c/Users/<用户名>/Documents/ComfyUI/models` | 无 |
 | `ANIMA_DIT` / `ANIMA_QWEN3` / `ANIMA_VAE` | 直接指定底模、文本编码器、VAE 文件，不填则在 models 目录中自动查找 | 自动 |
+
+## 迁移到另一台机器
+
+`config`、`datasets/`、`derived/`、`output/`、`.cache/` 都不在 git 里。在新机器上 `git clone` + `./install.sh` 之后：
+
+- 复制旧机器的 `config`，按新机器改 `COMFY_MODELS_PATH` 等路径；或者重新从 `config.example` 填写
+- 需要继续用的数据集复制 `datasets/<tag>/`（下载中断的数据集复制过去后重新运行 `llk -d` 可以续传）
+- 自己改过的 `presets/*.yaml` 记得提交或一并复制
+- `derived/` 是训练视图和 latent 缓存，可以不复制，训练时会重新生成；`.cache/` 是 HF 镜像索引，会自动重新下载
+- 模型文件放到新机器的 ComfyUI `models/` 下，或者用 `ANIMA_*` 指定
 
 ## 搜索 tag：`-s` / `--search`
 
@@ -130,28 +147,28 @@ llk -t hatsune_miku --trigger miku --epochs 15 --name miku_v1
 
 diffusion-pipe 按宽高比分桶，每个桶只保留 batch 大小整数倍的图片，凑不满的直接丢弃。llk 会读取每张图的实际尺寸，按 diffusion-pipe 的分桶规则（进入 log 空间中最近的宽高比）模拟，选出最多 9 个宽高比，使丢弃的图片数加上被裁掉的面积最小，写入 `dataset.toml` 的 `ar_buckets`。开始前会显示分桶数、每个 epoch 丢弃的张数和平均裁切比例；丢弃数通常等于图片总数除以 batch 的余数。底模、Qwen3 文本编码器和 VAE 默认在 ComfyUI 的 `models/diffusion_models`、`models/text_encoders`、`models/vae` 下查找。
 
-| 选项 | 说明 | 默认（`presets/default.yaml`） |
+| 选项 | 说明 | 内置默认 |
 |---|---|---|
 | `--name NAME` | 输出目录名 | `<数据集>_<时间>` |
 | `--rank N` | LoRA rank | 32 |
 | `--lr X` | 学习率 | 2e-5 |
 | `--epochs N` | 训练轮数 | 10 |
 | `--batch-size N` | batch 大小 | 4 |
-| `--resolution N` | 训练分辨率 | 768 |
-| `--save-every N` | 每 N 个 epoch 保存一次 | 5 |
+| `--resolution N` | 训练分辨率 | 1024 |
+| `--save-every N` | 每 N 个 epoch 保存一次 | 2 |
 | `--gradient-checkpointing` / `--no-gradient-checkpointing` | 梯度检查点 | 开 |
 | `-y` / `--yes` | 跳过确认 | |
 
-预处理的选项（`-c`、`--trigger`、`--remove-tags`、`--exclude-images`）同样适用于训练。输出目录里还有 `run.json`（本次用到的全部设置）和 `train.log`。
+优先级：命令行参数 > 预设（默认 `presets/default.yaml`）> 内置默认。预处理的选项（`-c`、`--trigger`、`--remove-tags`、`--exclude-images`）同样适用于训练。输出目录里还有 `run.json`（本次用到的全部设置）和 `train.log`。
 
 ## 预设
 
-预设是 `presets/` 下的 YAML 文件，分 `preprocess` 和 `train` 两节，命令行参数优先于预设：
+预设是 `presets/` 下的 YAML 文件，分 `preprocess` 和 `train` 两节，只需写要改的键，没写的用内置默认。命令行参数优先于预设。下面列出全部键及其内置默认值：
 
 ```yaml
 preprocess:
   trigger: ""
-  exclude_images: [ai-generated, lowres, sketch]
+  exclude_images: []     # 带这些 tag 的图片不参与训练，如 [ai-generated, lowres, sketch]
   remove_tags: []
   prefix_tags: []
   include_rating: true    # caption 中加入 safe / sensitive / nsfw / explicit
@@ -163,10 +180,10 @@ train:
   learning_rate: 2.0e-5
   epochs: 10
   batch_size: 4
-  resolution: 768
-  save_every_epochs: 5
+  resolution: 1024
+  save_every_epochs: 2
   optimizer: adamw_optimi # diffusion-pipe 的优化器名，也可用 AdamW8bit、AdamW8bitKahan、Prodigy 等
-  caption_dropout: 0.05   # 以空 caption 训练的比例（diffusion-pipe 的 uncond_fraction）
+  caption_dropout: 0      # 以空 caption 训练的比例（diffusion-pipe 的 uncond_fraction）
   gradient_checkpointing: true
 ```
 

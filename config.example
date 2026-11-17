@@ -1,11 +1,32 @@
-PROXY=
+# loralake 配置：复制为 config 后填写（install.sh 会自动复制）。KEY=VALUE，# 开头为注释。
+# 相对路径以仓库根目录为准。
 
-COMFY_MODELS_PATH=/mnt/c/Users/Zhou/Documents/ComfyUI/models
-
-DATASET_DIR=datasets
-DOWNLOAD_WORKERS=8
-
+# Danbooru 用户名和 API key，需同时填写；留空则匿名访问
 DANBOORU_LOGIN=
 DANBOORU_API_KEY=
 
+# Hugging Face token，用于 HF 镜像下载（需先在数据集页面同意访问条款）；留空则读环境变量 HF_TOKEN
 HF_API_KEY=
+
+# HTTP 代理，如 http://127.0.0.1:7890
+PROXY=
+
+# ComfyUI 的 models 目录，底模/文本编码器/VAE 会在其下的
+# diffusion_models / text_encoders / vae 子目录中自动查找。
+#   原生 Linux: /home/<用户名>/ComfyUI/models
+#   WSL:        /mnt/c/Users/<用户名>/Documents/ComfyUI/models
+COMFY_MODELS_PATH=
+
+# 也可以直接指定模型文件，填了就不再自动查找
+# ANIMA_DIT=
+# ANIMA_QWEN3=
+# ANIMA_VAE=
+
+# 数据目录
+DATASET_DIR=datasets
+# DERIVED_DIR=derived
+# OUTPUT_DIR=output
+
+# 并发数
+DOWNLOAD_WORKERS=8
+# MIRROR_WORKERS=32

@@ -30,9 +30,9 @@ class DiffusionPipeError(Exception):
 
 def ensure_installed() -> None:
     if not (DIFFUSION_PIPE_DIR / TRAIN_SCRIPT).is_file():
-        raise DiffusionPipeError(f"找不到 diffusion-pipe（{DIFFUSION_PIPE_DIR}），请运行: git submodule update --init --recursive")
+        raise DiffusionPipeError(f"找不到 diffusion-pipe（{DIFFUSION_PIPE_DIR}），请运行 ./install.sh")
     if not DEEPSPEED.is_file():
-        raise DiffusionPipeError(f"当前 Python 环境中没有 deepspeed（{DEEPSPEED}），请先激活 conda 环境: conda activate loralake")
+        raise DiffusionPipeError(f"当前 Python 环境中没有 deepspeed（{DEEPSPEED}），请先运行 ./install.sh 并激活环境: conda activate loralake")
 
 
 def commit() -> str:
