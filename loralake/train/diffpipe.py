@@ -23,6 +23,7 @@ STATUS_WIDTH = 60
 
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 STEP_PROGRESS = re.compile(r"steps: (\d+) loss: ([0-9.]+(?:e-?\d+)?)")
+TQDM_PROGRESS = re.compile(r"(\d+)/(\d+) \[")
 LOG_PREFIX = re.compile(r"^\s*(?:\[[^]]*\]\s*)*(?:\[?(?:INFO|WARNING|ERROR|DEBUG)\]?\s*)?(?:\[[^]]*\]\s*)*")
 
 
@@ -59,8 +60,13 @@ def _readable_status(line: str) -> str:
 def _update_progress(progress: Progress, task: TaskID, line: str) -> None:
     if match := STEP_PROGRESS.search(line):
         progress.update(task, description="训练", completed=int(match[1]), loss=f"loss {match[2]}", status="")
+    elif match := TQDM_PROGRESS.search(line):
+        # 缓存 latent / 文本编码时 diffusion-pipe 只输出 tqdm 进度条，接在最近一条状态后面显示
+        context = progress.tasks[task].fields["context"]
+        progress.update(task, status=f"{context} {match[1]}/{match[2]}"[-STATUS_WIDTH:])
     elif status := _readable_status(line):
-        progress.update(task, status=status)
+        context = status if status.lower().startswith("caching") else progress.tasks[task].fields["context"]
+        progress.update(task, status=status, context=context)
 
 
 def run_training(config_file: Path, log_file: Path, total_steps: int, console: Console) -> int:
@@ -77,7 +83,7 @@ def run_training(config_file: Path, log_file: Path, total_steps: int, console: C
         console=console,
     )
     with log_file.open("wb") as log, progress:
-        task = progress.add_task("准备中", total=total_steps, loss="", status="")
+        task = progress.add_task("准备中", total=total_steps, loss="", status="", context="")
         process = subprocess.Popen(command, cwd=DIFFUSION_PIPE_DIR, stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT, env=_environment())
         assert process.stdout is not None

@@ -46,10 +46,9 @@ WSL 下仓库要放在 Linux 文件系统里（如 `~/loralake`），不要放�
 
 - 运行时类型选 L4 或更好的 GPU。T4（免费版）不支持 bf16，不适合训练。
 - `install.sh` 检测到 Colab 会自动使用 `--system` 模式，沿用 Colab 自带的 PyTorch。编写时（2026-11）Colab 的环境为 Ubuntu 24.04、Python 3.13、torch 2.14.1+cu130、驱动 580.82.07。
-- `config` 的各项（Danbooru / HF key、代理、并发数）在笔记本的「配置」表单里填写，key 留空时会读取 Colab Secrets 中的同名项。
-- Google Drive 的 `MyDrive/loralake/` 用来长期保存预设、模型、数据集和训练输出。启动时把 Drive 上的内容复制到本地 `/content/work`，之后全部在本地读写；下载结束后把新增的数据集同步回 Drive，训练结束后把输出目录移动到 Drive 的 `output/`。会话中途断开时，还没保存的内容会丢失。
-- 「预设参数」单元格用表单编辑 `default.yaml` 的各项参数，同时写入仓库和 Drive。Drive 上 `presets/` 里的其他预设会覆盖仓库里的同名预设，用 `-c 名称` 选择。
-- 笔记本里不能交互确认，`-d` 和 `-t` 要加 `-y`。
+- `config` 和 `presets/default.yaml` 的内容各在一个单元格里，只有要改的文本；改完运行后面的「应用」单元格写入仓库（预设同时保存到 Drive）。
+- Google Drive 的 `MyDrive/loralake/` 用来长期保存预设、模型、数据集和训练输出。启动时把 Drive 上的内容复制到本地 `/content/work`，之后全部在本地读写；下载或训练后运行「保存到 Drive」单元格，把新增的数据集同步回 Drive、把训练输出移动到 Drive 的 `output/`。会话断开前没保存的内容会丢失。
+- Drive 上 `presets/` 里的其他预设会覆盖仓库里的同名预设，用 `-c 名称` 选择。
 
 ## 配置
 

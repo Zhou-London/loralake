@@ -69,6 +69,11 @@ install_system() {
   # env/constraints.txt 锁的是 conda 环境里的 torch 2.9 + Python 3.12，这里不使用
   "$PYTHON" -m pip install -c "$pins" -r "${ROOT}/third_party/diffusion-pipe/requirements.txt" -e "$ROOT"
   rm -f "$pins"
+  # 预装的旧版 torchao（如 Colab 的 0.10）会让 peft 创建 LoRA 时直接报错；diffusion-pipe 用不到它，卸载即可
+  if ! "$PYTHON" -c "from peft.import_utils import is_torchao_available; is_torchao_available()" 2>/dev/null; then
+    echo "peft 不兼容已安装的 torchao，卸载 torchao"
+    "$PYTHON" -m pip uninstall -y torchao
+  fi
 }
 
 if (( SYSTEM )); then

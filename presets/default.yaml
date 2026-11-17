@@ -1,5 +1,5 @@
 preprocess:
-  trigger: "lily (wuthering waves)"
+  trigger: "si (arknights)"
   exclude_images:
     - ai-generated
     - ai-assisted
@@ -13,6 +13,10 @@ preprocess:
     - anatomical_nonsense
     - sketch
     - unfinished
+    - 1boy
+    - multiple_boys
+    - multiple_girls
+    - sex
   remove_tags: []
   prefix_tags: []
   include_rating: true
