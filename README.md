@@ -58,7 +58,8 @@ WSL 下仓库要放在 Linux 文件系统里（如 `~/loralake`），不要放�
 | 配置项 | 说明 | 默认 |
 |---|---|---|
 | `DANBOORU_LOGIN` / `DANBOORU_API_KEY` | Danbooru 用户名和 API key，需同时填写 | 匿名 |
-| `HF_API_KEY` | Hugging Face token，用于 HF 镜像下载；需先在数据集页面同意访问条款 | 读取环境变量 `HF_TOKEN` |
+| `HF_API_KEY` | Hugging Face token，用于 HF 镜像下载（需先在数据集页面同意访问条款）和 `llk --upload`（需要 write 权限） | 读取环境变量 `HF_TOKEN` |
+| `HF_UPLOAD_REPO` | `llk --upload` 上传到的私有仓库 | `<用户名>/loralake` |
 | `PROXY` | HTTP 代理地址 | 无 |
 | `DOWNLOAD_WORKERS` | Danbooru CDN 并发数 | 8 |
 | `MIRROR_WORKERS` | HF 镜像并发数 | 32 |
@@ -89,6 +90,22 @@ llk --unpack /path/to/hatsune_miku.tar.zst      # 也可以直接给压缩包路
 解压时数据集名取自压缩包内容。目标已存在时会先询问，确认后整个替换（`-y` 跳过询问）；解压失败不会动原有的数据集。
 
 压缩包可以放到 Google Drive，在新机器上用 `llk -d <分享链接>` 直接下载并解压（见下文「从 Google Drive 下载」）。
+
+### 上传到 Hugging Face：`--upload`
+
+在计算中心等远程机器上训练时，用它把结果传到自己的 Hugging Face 私有仓库：
+
+```bash
+llk --upload kincora_20261126-1645   # 训练输出 output/<名字>/ → 仓库的 output/<名字>/
+llk --upload kincora                 # 数据集：打包后上传到仓库的 datasets/kincora.tar.zst
+```
+
+- 使用 `config` 里的 `HF_API_KEY`，不需要浏览器登录，token 不会过期。token 要有 write 权限（在 <https://huggingface.co/settings/tokens> 生成 Write 类型，或 Fine-grained 类型勾选自己仓库的写权限）。
+- 仓库默认是 `<用户名>/loralake`，私有的 dataset 仓库，不存在时自动创建；可用 `HF_UPLOAD_REPO` 指定。
+- 名字先按 `output/` 下的训练输出查找，找不到再按数据集查找。上传前会确认，`-y` 跳过。
+- 训练输出整个目录上传；训练中断时目录里还有训练状态，可以拿到别的机器上续训。
+- 中断后重新运行同一命令即可，没有变化的大文件不会重复传。会使用 `config` 里的 `PROXY`。很多计算中心只有登录节点能上网，这时在登录节点上运行。
+- 取回：在仓库网页上下载，或者用 `hf download <用户名>/loralake --repo-type dataset --include "output/<名字>/*" --local-dir .`；数据集压缩包下载到 `datasets/` 后运行 `llk --unpack <名字>`。
 
 ## 搜索 tag：`-s` / `--search`
 

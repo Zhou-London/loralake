@@ -47,6 +47,7 @@ class Config:
     danbooru_login: str = ""
     danbooru_api_key: str = ""
     hf_token: str = ""
+    hf_upload_repo: str = ""
     proxy: str = ""
     cdn_workers: int = 8
     mirror_workers: int = 32
@@ -65,6 +66,7 @@ class Config:
             danbooru_login=values.get("DANBOORU_LOGIN", ""),
             danbooru_api_key=values.get("DANBOORU_API_KEY", ""),
             hf_token=values.get("HF_API_KEY") or os.environ.get("HF_TOKEN", ""),
+            hf_upload_repo=values.get("HF_UPLOAD_REPO", ""),
             proxy=values.get("PROXY", ""),
             cdn_workers=int(values.get("DOWNLOAD_WORKERS") or 8),
             mirror_workers=int(values.get("MIRROR_WORKERS") or 32),
