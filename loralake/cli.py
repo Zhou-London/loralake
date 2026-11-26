@@ -17,6 +17,7 @@ from .preprocess.review import DEFAULT_PORT, review
 from .preprocess.tags import canonical_tags
 from .presets import Preset, PresetError, load_preset
 from .train.commands import resume, train
+from .upload import upload
 
 DEFAULT_SEARCH_LIMIT = 10
 DEFAULT_PREVIEW_SAMPLES = 5
@@ -75,6 +76,7 @@ def main(
     review_dataset: Annotated[Optional[str], typer.Option("--review", metavar="DATASET")] = None,
     pack_dataset: Annotated[Optional[str], typer.Option("--pack", metavar="DATASET")] = None,
     unpack_archive: Annotated[Optional[str], typer.Option("--unpack", metavar="ARCHIVE")] = None,
+    upload_name: Annotated[Optional[str], typer.Option("--upload", metavar="RUN|DATASET")] = None,
     extra_tags: Annotated[Optional[list[str]], typer.Argument(hidden=True, metavar="TAG")] = None,
     preset_name: Annotated[Optional[str], typer.Option("--config", "-c", metavar="PRESET")] = None,
     output: Annotated[Optional[Path], typer.Option(file_okay=False)] = None,
@@ -101,7 +103,8 @@ def main(
     actions = [flag for flag, value in (
         ("--download", download_tag), ("--search", search_tag),
         ("--preprocess", preprocess_dataset), ("--train", train_dataset), ("--resume", resume_run),
-        ("--review", review_dataset), ("--pack", pack_dataset), ("--unpack", unpack_archive)) if value]
+        ("--review", review_dataset), ("--pack", pack_dataset), ("--unpack", unpack_archive),
+        ("--upload", upload_name)) if value]
     if len(actions) > 1:
         raise click.UsageError(f"{' 和 '.join(actions)} 不能同时使用")
 
@@ -120,6 +123,9 @@ def main(
     if unpack_archive:
         raise typer.Exit(unpack(unpack_archive, yes, Config.load()))
 
+    if upload_name:
+        raise typer.Exit(upload(upload_name, yes, Config.load()))
+
     if preprocess_dataset or train_dataset:
         train_overrides = given(rank=rank, learning_rate=learning_rate, epochs=epochs, batch_size=batch_size,
                                 resolution=resolution, save_every_epochs=save_every,
@@ -137,7 +143,7 @@ def main(
     first_tag = download_tag or search_tag
     if not first_tag:
         if extra_tags:
-            raise click.UsageError("需要 --download、--search、--preprocess、--train、--review、--pack 或 --unpack")
+            raise click.UsageError("需要 --download、--search、--preprocess、--train、--review、--pack、--unpack 或 --upload")
         typer.echo(ctx.get_help())
         raise typer.Exit()
 

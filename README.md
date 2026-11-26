@@ -59,7 +59,8 @@ WSL 下仓库要放在 Linux 文件系统里（如 `~/loralake`），不要放�
 |---|---|---|
 | `DANBOORU_LOGIN` / `DANBOORU_API_KEY` | Danbooru 用户名和 API key，需同时填写 | 匿名 |
 | `HF_API_KEY` | Hugging Face token，用于 HF 镜像下载；需先在数据集页面同意访问条款 | 读取环境变量 `HF_TOKEN` |
-| `PROXY` | HTTP 代理地址 | 无 |
+| `PROXY` | HTTP 代理地址（rclone 访问 Google Drive 时也会使用） | 无 |
+| `RCLONE_REMOTE` | Google Drive 的 rclone `remote:路径`：`llk --upload` 上传到这里，`llk -d <Drive 链接>` 用其中的 remote 下载 | `gdrive:loralake` |
 | `DOWNLOAD_WORKERS` | Danbooru CDN 并发数 | 8 |
 | `MIRROR_WORKERS` | HF 镜像并发数 | 32 |
 | `DATASET_DIR` / `DERIVED_DIR` / `OUTPUT_DIR` | 数据集、训练视图、训练输出目录（相对路径以仓库根目录为准） | `datasets` / `derived` / `output` |
@@ -88,7 +89,33 @@ llk --unpack /path/to/hatsune_miku.tar.zst      # 也可以直接给压缩包路
 
 解压时数据集名取自压缩包内容。目标已存在时会先询问，确认后整个替换（`-y` 跳过询问）；解压失败不会动原有的数据集。
 
-压缩包可以放到 Google Drive，在新机器上用 `llk -d <分享链接>` 直接下载并解压（见下文「从 Google Drive 下载」）。
+压缩包可以放到 Google Drive（手动上传或 `llk --upload`），在新机器上用 `llk -d <Drive 链接>` 直接下载并解压（见下文「从 Google Drive 下载」）。
+
+### 上传到 Google Drive：`--upload`
+
+在计算中心等远程机器上训练时，用它把结果传到 Google Drive：
+
+```bash
+llk --upload kincora_20261126-1645   # 训练输出 output/<名字>/ → MyDrive/loralake/output/<名字>/
+llk --upload kincora                 # 数据集：打包后上传到 MyDrive/loralake/datasets/kincora.tar.zst
+```
+
+- 名字先按 `output/` 下的训练输出查找，找不到再按数据集查找。上传前会确认，`-y` 跳过。
+- 训练输出整个目录上传。训练中断时目录里还有训练状态，上传后可以在 Colab 上续训（Colab 笔记本使用的正是 `MyDrive/loralake/`）。
+- 数据集上传后打印文件链接，在别的机器上 `llk -d "<链接>"` 即可取回。文件不会被公开分享。
+- 上传由 [rclone](https://rclone.org/) 完成：中断后重新运行会跳过已上传的文件，会使用 `config` 里的 `PROXY`。上传位置由 `RCLONE_REMOTE` 决定（默认 `gdrive:loralake`）。
+- 很多计算中心只有登录节点能上网，这时在登录节点上运行。
+
+### rclone 安装和授权
+
+`--upload` 和从 Google Drive 下载都通过 [rclone](https://rclone.org/) 访问你的 Drive，每台机器配置一次：
+
+```bash
+conda install -n loralake -c conda-forge rclone   # 或者把 https://rclone.org/downloads/ 的 rclone 放进 ~/bin，不需要 root
+rclone config
+```
+
+在 `rclone config` 里：`n` 新建 remote，名字填 `gdrive`，类型选 `drive`，`client_id` / `client_secret` 留空，scope 选 `1`（完整访问），之后一路默认。问到 `Use web browser to automatically authenticate?` 时，远程机器上没有浏览器，选 `n`。它会给出一条 `rclone authorize "drive" "..."` 命令，在自己电脑上（同样需要装 rclone）运行，浏览器里登录 Google 后把输出的 token 贴回远程机器即可。
 
 ## 搜索 tag：`-s` / `--search`
 
@@ -120,12 +147,16 @@ llk -d hatsune_miku --limit 500 -y
 ### 从 Google Drive 下载
 
 ```bash
-llk -d "https://drive.google.com/file/d/<文件ID>/view?usp=sharing"
+llk -d "https://drive.google.com/file/d/<文件ID>/view"
 ```
 
-`-d` 后面是 Google Drive 的文件分享链接时，把这个文件下载到 `datasets/`（文件名沿用 Drive 上的）；如果是 `llk --pack` 生成的 `.tar.zst`，下载完自动解压。文件要在 Drive 里设为「知道链接的任何人可查看」，不需要登录；只支持单个文件，不支持文件夹。链接里有 `&` 时要加引号。
+`-d` 后面是 Google Drive 的文件链接时，用 rclone 按链接里的文件 ID 把这个文件下载到 `datasets/`（文件名沿用 Drive 上的）；如果是 `llk --pack` 生成的 `.tar.zst`，下载完自动解压。`llk --upload` 上传数据集后会打印这条命令。
 
-会使用 `config` 里的 `PROXY`。中断后重新运行同一命令会从断点继续（临时文件 `datasets/.gdrive-<文件ID>.part`）。Colab 上 Drive 已经挂载，直接 `llk --unpack /content/drive/MyDrive/...` 即可。
+- 需要先配置 rclone（见上文「rclone 安装和授权」），使用 `RCLONE_REMOTE` 里的 remote（默认 `gdrive:`）。
+- rclone 授权的账号能访问的文件都可以下载：自己 Drive 里的文件不需要公开分享，别人的文件需要分享给你或设为「知道链接的任何人可查看」。
+- 只支持单个文件，不支持文件夹。链接里有 `&` 时要加引号。
+- 网络错误时 rclone 会自动重试；中断后重新运行会从头下载。
+- Colab 上 Drive 已经挂载，不需要 rclone，直接 `llk --unpack /content/drive/MyDrive/...` 即可。
 
 ### 下载来源
 

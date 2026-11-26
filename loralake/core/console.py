@@ -13,6 +13,6 @@ def confirm(prompt: str) -> bool:
 
 
 def transfer_progress() -> Progress:
-    """按字节显示进度的进度条（打包、解压、下载单个文件）。"""
+    """按字节显示进度的进度条（打包、解压）。"""
     return Progress(TextColumn("[bold]{task.description}"), BarColumn(), DownloadColumn(), TransferSpeedColumn(),
                     TimeRemainingColumn(), console=console)
