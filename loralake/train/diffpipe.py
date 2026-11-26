@@ -4,6 +4,7 @@ import re
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from rich.console import Console
@@ -18,6 +19,8 @@ TRAIN_SCRIPT = "train.py"
 DEEPSPEED = [sys.executable, "-m", "deepspeed.launcher.runner"]
 ADAPTER_FILE = "adapter_model.safetensors"
 EPOCH_DIR = re.compile(r"^epoch(\d+)$")
+STATE_DIR = re.compile(r"^global_step(\d+)$")
+LATEST_FILE = "latest"
 READ_CHUNK = 1 << 16
 STATUS_WIDTH = 60
 
@@ -69,8 +72,44 @@ def _update_progress(progress: Progress, task: TaskID, line: str) -> None:
         progress.update(task, status=status, context=context)
 
 
-def run_training(config_file: Path, log_file: Path, total_steps: int, console: Console) -> int:
+@dataclass(frozen=True)
+class TrainingState:
+    run: str  # checkpoints/ 下 diffusion-pipe 的运行目录名，传给 --resume_from_checkpoint
+    step: int
+
+
+def _state_step(path: Path) -> int | None:
+    match = STATE_DIR.match(path.name)
+    return int(match[1]) if match else None
+
+
+def latest_training_state(checkpoint_dir: Path) -> TrainingState | None:
+    states = []
+    for latest in checkpoint_dir.glob(f"*/{LATEST_FILE}"):
+        tag = latest.read_text(encoding="utf-8").strip()
+        step = _state_step(Path(tag))
+        if step is not None and (latest.parent / tag).is_dir():
+            states.append((latest.stat().st_mtime, TrainingState(latest.parent.name, step)))
+    return max(states, key=lambda item: item[0])[1] if states else None
+
+
+def prune_training_state(checkpoint_dir: Path) -> None:
+    """删掉比 latest 指向的更早的训练状态。latest 在新状态写完后才更新，所以正在写的那份不会被删。"""
+    for latest in checkpoint_dir.glob(f"*/{LATEST_FILE}"):
+        current = _state_step(Path(latest.read_text(encoding="utf-8").strip()))
+        if current is None:
+            continue
+        for state in latest.parent.glob("global_step*"):
+            step = _state_step(state)
+            if step is not None and step < current and state.is_dir():
+                shutil.rmtree(state, ignore_errors=True)
+
+
+def run_training(config_file: Path, log_file: Path, total_steps: int, console: Console,
+                 checkpoint_dir: Path, resume: TrainingState | None = None) -> int:
     command = [*DEEPSPEED, "--num_gpus=1", TRAIN_SCRIPT, "--deepspeed", "--config", str(config_file)]
+    if resume is not None:
+        command += ["--resume_from_checkpoint", resume.run]
     progress = Progress(
         SpinnerColumn(),
         TextColumn("[bold]{task.description}"),
@@ -82,8 +121,9 @@ def run_training(config_file: Path, log_file: Path, total_steps: int, console: C
         TextColumn("[dim]{task.fields[status]}"),
         console=console,
     )
-    with log_file.open("wb") as log, progress:
-        task = progress.add_task("准备中", total=total_steps, loss="", status="", context="")
+    with log_file.open("ab" if resume else "wb") as log, progress:
+        task = progress.add_task("准备中", total=total_steps, completed=resume.step if resume else 0,
+                                 loss="", status="", context="")
         process = subprocess.Popen(command, cwd=DIFFUSION_PIPE_DIR, stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT, env=_environment())
         assert process.stdout is not None
@@ -94,7 +134,10 @@ def run_training(config_file: Path, log_file: Path, total_steps: int, console: C
                 log.flush()
                 *lines, pending = re.split(rb"[\r\n]", pending + chunk)
                 for line in lines:
-                    _update_progress(progress, task, ANSI_ESCAPE.sub("", line.decode("utf-8", "replace")))
+                    text = ANSI_ESCAPE.sub("", line.decode("utf-8", "replace"))
+                    _update_progress(progress, task, text)
+                    if STEP_PROGRESS.search(text):
+                        prune_training_state(checkpoint_dir)
             exit_code = process.wait()
             if exit_code == 0:
                 progress.update(task, total=progress.tasks[0].completed)
@@ -105,7 +148,7 @@ def run_training(config_file: Path, log_file: Path, total_steps: int, console: C
             raise
 
 
-def collect_adapters(checkpoint_dir: Path, run_dir: Path, final_epoch: int) -> list[Path]:
+def collect_adapters(checkpoint_dir: Path, run_dir: Path, final_epoch: int, required: bool = True) -> list[Path]:
     collected = []
     for adapter in sorted(checkpoint_dir.glob(f"*/epoch*/{ADAPTER_FILE}")):
         match = EPOCH_DIR.match(adapter.parent.name)
@@ -116,7 +159,7 @@ def collect_adapters(checkpoint_dir: Path, run_dir: Path, final_epoch: int) -> l
         target = run_dir / f"{name}.safetensors"
         shutil.move(adapter, target)
         collected.append(target)
-    if not collected:
+    if not collected and required:
         raise DiffusionPipeError(f"在 {checkpoint_dir} 中没有找到训练好的 LoRA")
     return collected
 

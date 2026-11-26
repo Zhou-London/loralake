@@ -7,6 +7,7 @@
 ```bash
 llk -s 初音未来                  # 搜 tag，看帖子数和预估大小
 llk -d hatsune_miku              # 下载到 datasets/hatsune_miku
+llk --review hatsune_miku        # 在浏览器里整理数据集：去重、丢图、改 tag
 llk -p hatsune_miku              # 预览 caption
 llk -t hatsune_miku              # 训练，结果在 output/
 ```
@@ -128,7 +129,32 @@ datasets/<tag>/
 └── metadata.jsonl         每张图的元数据（tag、评级、尺寸、来源 mirror/cdn 等）
 ```
 
+查重时还会在这里生成 `.dedup_cache.json`（哈希缓存，可以删除）；`llk --review` 的整理结果保存在 `review.json`（见下文）。
+
 中断或有失败时重新运行同一命令即可继续，已下载的会跳过。有失败项时退出码为 2。
+
+## 整理数据集：`--review`
+
+```bash
+llk --review hatsune_miku
+```
+
+在本机启动一个页面（默认 <http://localhost:8765/>，端口被占用时自动顺延，也可用 `--port` 指定），WSL 下直接用 Windows 的浏览器打开。这一步只针对数据集本身，与模型和预设无关，在预处理之前做；修改实时保存到 `datasets/<tag>/review.json`，之后的预处理和训练都会先应用它。完成后在终端按 Ctrl+C 退出。
+
+- **图片**：浏览全部图片。搜索框按 tag 筛选（空格分隔多个，`-tag` 排除，支持 `*` 通配和帖子 id），顶部可切换全部 / 保留 / 丢弃 / 已改。
+- **重复**：逐组比较疑似重复的图片，丢弃不要的后点「确认」（或按 Enter）。分辨率最高的一张加粗，下方列出 `textless version`、`watermark` 等有助于判断的 tag。
+- **选中**：单击选中，Ctrl 单击多选，Shift 单击或 Shift+方向键连选，Ctrl+A 全选当前筛选结果。右侧面板显示选中图片的 tag：单击 tag 搜索同 tag 的图片，× 删除，输入框添加（可用 `artist:`、`character:` 等前缀指定类别）；多选时对所有选中图片生效，只有部分图片有的 tag 显示数量，点 + 补全到全部。
+- **丢弃**：按 D（或 Delete）、点面板上的按钮或缩略图右上角的按钮，丢弃 / 恢复选中的图片。单张时丢弃后自动跳到下一张。
+- **大图**：双击或按空格查看原图，方向键切换，Esc 关闭。
+
+去重分两步。Danbooru 上同一张插画常常有好几份：不同尺寸的重传、去字版、加了 logo 或标题的封面、表情差分、去背景版等，重复的图会让 LoRA 过拟合到那几张构图上。
+
+1. **自动去除**：感知哈希（pHash）相近、宽高比相同，并且缩小后逐块比较几乎没有差别的图片，视为同一张图（缩放、重新编码、轻微调色），只保留像素最多的一张。这一步只处理非常确定的情况，页面上不显示被去除的图。
+2. **人工确认**：其余相近的图片（去字版、加 logo 或签名、表情差分、去背景、裁切等）按组列出，确认前全部保留。预处理和训练时会提示待确认的组数。只剩一张没丢弃的组自动算作已确认；新下载的图片和已确认的图片相近时，所在的组会重新变成待确认。
+
+改过的 tag 会替换 `metadata.jsonl` 里的 tag，参与预处理的 `exclude_images` 判断和 caption 生成；在面板上点「还原 tag」恢复原样。缩略图缓存在 `derived/<tag>/.thumbs/`。
+
+Colab 上在同一个单元格里先运行 `from google.colab import output; output.serve_kernel_port_as_window(8765)`，再运行 `!llk --review <数据集>`，点击输出的链接打开页面；完成后中断该单元格。
 
 ## 预处理：`-p` / `--preprocess`
 
@@ -138,7 +164,7 @@ llk -p hatsune_miku --limit 10                        # 预览 10 条
 llk -p hatsune_miku --output derived/hatsune_miku/anima   # 生成训练视图
 ```
 
-按预设排除图片、生成 Anima 格式的 caption。不带 `--output` 时只预览；带 `--output` 时把选中的图片以硬链接（不支持时复制）放到视图目录，并写入 caption。
+应用 `--review` 的整理结果，再按预设排除图片、去重、生成 Anima 格式的 caption。不带 `--output` 时只预览；带 `--output` 时把选中的图片以硬链接（不支持时复制）放到视图目录，并写入 caption。
 
 | 选项 | 说明 |
 |---|---|
@@ -146,6 +172,7 @@ llk -p hatsune_miku --output derived/hatsune_miku/anima   # 生成训练视图
 | `--trigger TEXT` | 触发词，放在 caption 最前面 |
 | `--remove-tags TAGS` | 从 caption 中去掉的 tag，逗号分隔 |
 | `--exclude-images TAGS` | 带有这些 tag 的图片不参与训练，逗号分隔（会覆盖预设里的列表） |
+| `--dedup` / `--no-dedup` | 开启 / 关闭去重（覆盖预设的 `dedup`，默认开启） |
 
 ## 训练：`-t` / `--train`
 
@@ -154,7 +181,7 @@ llk -t hatsune_miku
 llk -t hatsune_miku --trigger miku --epochs 15 --name miku_v1
 ```
 
-自动生成训练视图和 diffusion-pipe 配置，训练完成后把各 epoch 的 LoRA（本身就是 ComfyUI 格式）移到 `output/<name>/`：最后一个 epoch 是 `<name>.safetensors`，中间版本是 `<name>-<epoch>.safetensors`。diffusion-pipe 的配置副本和 TensorBoard 日志在 `output/<name>/checkpoints/`（训练成功后会删掉 DeepSpeed 的训练状态，不支持续训），latent 和文本缓存在训练视图目录的 `cache/` 下。LLM adapter 不参与训练（`llm_adapter_lr = 0`，与官方示例一致）。
+自动生成训练视图和 diffusion-pipe 配置，训练完成后把各 epoch 的 LoRA（本身就是 ComfyUI 格式）移到 `output/<name>/`：最后一个 epoch 是 `<name>.safetensors`，中间版本是 `<name>-<epoch>.safetensors`。diffusion-pipe 的配置副本和 TensorBoard 日志在 `output/<name>/checkpoints/`，latent 和文本缓存在训练视图目录的 `cache/` 下。LLM adapter 不参与训练（`llm_adapter_lr = 0`，与官方示例一致）。
 
 diffusion-pipe 按宽高比分桶，每个桶只保留 batch 大小整数倍的图片，凑不满的直接丢弃。llk 会读取每张图的实际尺寸，按 diffusion-pipe 的分桶规则（进入 log 空间中最近的宽高比）模拟，选出最多 9 个宽高比，使丢弃的图片数加上被裁掉的面积最小，写入 `dataset.toml` 的 `ar_buckets`。开始前会显示分桶数、每个 epoch 丢弃的张数和平均裁切比例；丢弃数通常等于图片总数除以 batch 的余数。底模、Qwen3 文本编码器和 VAE 默认在 ComfyUI 的 `models/diffusion_models`、`models/text_encoders`、`models/vae` 下查找。
 
@@ -170,7 +197,15 @@ diffusion-pipe 按宽高比分桶，每个桶只保留 batch 大小整数倍的�
 | `--gradient-checkpointing` / `--no-gradient-checkpointing` | 梯度检查点 | 开 |
 | `-y` / `--yes` | 跳过确认 | |
 
-优先级：命令行参数 > 预设（默认 `presets/default.yaml`）> 内置默认。预处理的选项（`-c`、`--trigger`、`--remove-tags`、`--exclude-images`）同样适用于训练。输出目录里还有 `run.json`（本次用到的全部设置）和 `train.log`。
+### 中断和续训：`-r` / `--resume`
+
+```bash
+llk --resume miku_v1
+```
+
+训练中可以随时按 Ctrl+C 中断，已经保存的各 epoch LoRA 会移到 `output/<name>/`。训练状态（优化器、数据进度）每 30 分钟保存一次（预设键 `checkpoint_every_minutes`），只保留最新一份；中断后用 `--resume <name>` 从最近一次保存的状态继续，最多重练这 30 分钟内的步数。续训沿用 `run.json` 里的全部设置，不能再改 `--epochs`、`--lr` 等选项；数据集、筛选结果或底模和开始时不同则拒绝续训。训练成功结束后会删掉训练状态。
+
+优先级：命令行参数 > 预设（默认 `presets/default.yaml`）> 内置默认。预处理的选项（`-c`、`--trigger`、`--remove-tags`、`--exclude-images`、`--dedup`/`--no-dedup`）同样适用于训练。输出目录里还有 `run.json`（本次用到的全部设置）和 `train.log`。
 
 ## 预设
 
@@ -180,6 +215,7 @@ diffusion-pipe 按宽高比分桶，每个桶只保留 batch 大小整数倍的�
 preprocess:
   trigger: ""
   exclude_images: []     # 带这些 tag 的图片不参与训练，如 [ai-generated, lowres, sketch]
+  dedup: true             # 去重（自动去除像素相同的图片）
   remove_tags: []
   prefix_tags: []
   include_rating: true    # caption 中加入 safe / sensitive / nsfw / explicit
@@ -193,6 +229,7 @@ train:
   batch_size: 4
   resolution: 1024
   save_every_epochs: 2
+  checkpoint_every_minutes: 30 # 每隔多少分钟保存一次训练状态，用于 --resume
   optimizer: adamw_optimi # diffusion-pipe 的优化器名，也可用 AdamW8bit、AdamW8bitKahan、Prodigy 等
   caption_dropout: 0      # 以空 caption 训练的比例（diffusion-pipe 的 uncond_fraction）
   gradient_checkpointing: true

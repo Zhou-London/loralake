@@ -21,3 +21,6 @@ llk = "loralake.cli:app"
 
 [tool.setuptools.packages.find]
 include = ["loralake*"]
+
+[tool.setuptools.package-data]
+loralake = ["preprocess/*.html"]

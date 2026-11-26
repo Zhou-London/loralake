@@ -1,5 +1,5 @@
 preprocess:
-  trigger: "si (arknights)"
+  trigger: ""
   exclude_images:
     - ai-generated
     - ai-assisted
@@ -10,24 +10,17 @@ preprocess:
     - bad_feet
     - bad_proportions
     - bad_perspective
-    - anatomical_nonsense
-    - sketch
-    - unfinished
-    - 1boy
-    - multiple_boys
-    - multiple_girls
-    - sex
-  remove_tags: []
+  remove_tags: ["absurdres", "highres", "novel illustration", "official art"]
   prefix_tags: []
-  include_rating: true
-  include_year: true
-  include_artist: true
+  include_rating: false
+  include_year: false
+  include_artist: false
 
 train:
   rank: 32
   learning_rate: 2.0e-5
   epochs: 20
-  batch_size: 4
+  batch_size: 16
   resolution: 1024
   save_every_epochs: 2
   optimizer: adamw_optimi

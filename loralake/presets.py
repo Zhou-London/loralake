@@ -27,6 +27,7 @@ class PresetError(Exception):
 class Preset:
     source: Path | None = None
     exclude_images: frozenset[str] = frozenset()
+    dedup: bool = True
     caption: AnimaCaptionOptions = field(default_factory=AnimaCaptionOptions)
     train: TrainSettings = field(default_factory=TrainSettings)
 
@@ -78,7 +79,7 @@ def _coerce(value: Any, annotation: Any, where: str) -> Any:
     raise PresetError(f"{where} 的值 {value!r} 类型错误，应为 {getattr(annotation, '__name__', annotation)}")
 
 
-def _apply(options: Options, values: Mapping[str, Any], section: str) -> Options:
+def apply_options(options: Options, values: Mapping[str, Any], section: str) -> Options:
     hints = get_type_hints(type(options))
     names = {f.name for f in fields(options)}
     if unknown := sorted(set(values) - names):
@@ -111,11 +112,13 @@ def load_preset(name_or_path: str | None) -> Preset:
     preprocess = _section(document, "preprocess")
     exclude_images = canonical_tags(_as_tag_list(preprocess.pop("exclude_images", []), "preprocess.exclude_images"))
     try:
+        dedup = _coerce(preprocess.pop("dedup", True), bool, "preprocess.dedup")
         return Preset(
             source=path,
             exclude_images=exclude_images,
-            caption=_apply(AnimaCaptionOptions(), preprocess, "preprocess"),
-            train=_apply(TrainSettings(), _section(document, "train"), "train"),
+            dedup=dedup,
+            caption=apply_options(AnimaCaptionOptions(), preprocess, "preprocess"),
+            train=apply_options(TrainSettings(), _section(document, "train"), "train"),
         )
     except PresetError as e:
         raise PresetError(f"预设 {path}: {e}") from e

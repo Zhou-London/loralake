@@ -11,12 +11,16 @@ from .core.config import Config
 from .core.console import console
 from .download.commands import download, search
 from .preprocess.commands import preprocess
+from .preprocess.review import DEFAULT_PORT, review
 from .preprocess.tags import canonical_tags
 from .presets import Preset, PresetError, load_preset
-from .train.commands import train
+from .train.commands import resume, train
 
 DEFAULT_SEARCH_LIMIT = 10
 DEFAULT_PREVIEW_SAMPLES = 5
+# 续训时这些选项沿用 run.json 里的值
+RESUME_FIXED = frozenset({"preset_name", "trigger", "remove_tags", "exclude_images", "name", "rank", "learning_rate",
+                          "epochs", "batch_size", "resolution", "save_every", "gradient_checkpointing", "dedup"})
 
 app = typer.Typer(
     add_completion=False,
@@ -42,7 +46,7 @@ def tag_list(value: str | None) -> frozenset[str] | None:
 
 
 def resolve_preset(preset_name: str | None, trigger: str | None, remove_tags: str | None, exclude_images: str | None,
-                   train_overrides: dict[str, Any]) -> Preset:
+                   dedup: bool | None, train_overrides: dict[str, Any]) -> Preset:
     try:
         preset = load_preset(preset_name)
     except PresetError as e:
@@ -52,7 +56,8 @@ def resolve_preset(preset_name: str | None, trigger: str | None, remove_tags: st
                                               remove_tags=tag_list(remove_tags)))
     excluded = tag_list(exclude_images)
     return replace(preset, caption=caption, train=replace(preset.train, **train_overrides),
-                   exclude_images=preset.exclude_images if excluded is None else excluded)
+                   exclude_images=preset.exclude_images if excluded is None else excluded,
+                   dedup=preset.dedup if dedup is None else dedup)
 
 
 @app.command()
@@ -62,6 +67,8 @@ def main(
     search_tag: Annotated[Optional[str], typer.Option("--search", "-s", metavar="TAG")] = None,
     preprocess_dataset: Annotated[Optional[str], typer.Option("--preprocess", "-p", metavar="DATASET")] = None,
     train_dataset: Annotated[Optional[str], typer.Option("--train", "-t", metavar="DATASET")] = None,
+    resume_run: Annotated[Optional[str], typer.Option("--resume", "-r", metavar="RUN")] = None,
+    review_dataset: Annotated[Optional[str], typer.Option("--review", metavar="DATASET")] = None,
     extra_tags: Annotated[Optional[list[str]], typer.Argument(hidden=True, metavar="TAG")] = None,
     preset_name: Annotated[Optional[str], typer.Option("--config", "-c", metavar="PRESET")] = None,
     output: Annotated[Optional[Path], typer.Option(file_okay=False)] = None,
@@ -74,6 +81,8 @@ def main(
     trigger: Annotated[Optional[str], typer.Option()] = None,
     remove_tags: Annotated[Optional[str], typer.Option(metavar="TAGS")] = None,
     exclude_images: Annotated[Optional[str], typer.Option(metavar="TAGS")] = None,
+    dedup: Annotated[Optional[bool], typer.Option("--dedup/--no-dedup")] = None,
+    port: Annotated[int, typer.Option(min=1, max=65535)] = DEFAULT_PORT,
     name: Annotated[Optional[str], typer.Option()] = None,
     rank: Annotated[Optional[int], typer.Option(min=1)] = None,
     learning_rate: Annotated[Optional[float], typer.Option("--lr", min=0)] = None,
@@ -85,28 +94,38 @@ def main(
 ) -> None:
     actions = [flag for flag, value in (
         ("--download", download_tag), ("--search", search_tag),
-        ("--preprocess", preprocess_dataset), ("--train", train_dataset)) if value]
+        ("--preprocess", preprocess_dataset), ("--train", train_dataset), ("--resume", resume_run),
+        ("--review", review_dataset)) if value]
     if len(actions) > 1:
         raise click.UsageError(f"{' 和 '.join(actions)} 不能同时使用")
+
+    if resume_run:
+        if fixed := [f"--{param.name.replace('_', '-')}" for param in ctx.command.params
+                     if param.name in RESUME_FIXED and ctx.params.get(param.name) is not None]:
+            raise click.UsageError(f"--resume 沿用开始训练时的设置，不能再指定 {', '.join(fixed)}")
+        raise typer.Exit(resume(resume_run, yes, Config.load()))
+
+    if review_dataset:
+        raise typer.Exit(review(review_dataset, port, Config.load()))
 
     if preprocess_dataset or train_dataset:
         train_overrides = given(rank=rank, learning_rate=learning_rate, epochs=epochs, batch_size=batch_size,
                                 resolution=resolution, save_every_epochs=save_every,
                                 gradient_checkpointing=gradient_checkpointing)
-        preset = resolve_preset(preset_name, trigger, remove_tags, exclude_images, train_overrides)
+        preset = resolve_preset(preset_name, trigger, remove_tags, exclude_images, dedup, train_overrides)
         if preset.source:
             console.print(f"[dim]预设: {preset.source}")
         if preprocess_dataset:
-            raise typer.Exit(preprocess(preprocess_dataset, preset.exclude_images, preset.caption,
+            raise typer.Exit(preprocess(preprocess_dataset, preset.exclude_images, preset.dedup, preset.caption,
                                         limit or DEFAULT_PREVIEW_SAMPLES, output, Config.load()))
         assert train_dataset is not None
-        raise typer.Exit(train(train_dataset, preset.exclude_images, preset.caption, preset.train,
+        raise typer.Exit(train(train_dataset, preset.exclude_images, preset.dedup, preset.caption, preset.train,
                                preset.source, name, yes, Config.load()))
 
     first_tag = download_tag or search_tag
     if not first_tag:
         if extra_tags:
-            raise click.UsageError("需要 --download、--search、--preprocess 或 --train")
+            raise click.UsageError("需要 --download、--search、--preprocess、--train 或 --review")
         typer.echo(ctx.get_help())
         raise typer.Exit()
 

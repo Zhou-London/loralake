@@ -1,0 +1,740 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Review</title>
+<style>
+  :root {
+    --bg: #f4f4f2; --pane: #ffffff; --text: #1d1d1f; --muted: #75757a; --line: #e0e0dc; --hover: #ebebe7;
+    --tile: #e7e7e3; --accent: #2f6fde; --accent-text: #fff; --drop: #d93a2b; --ok: #2e8b57;
+    --c-artist: #c00004; --c-copyright: #a800aa; --c-character: #00a02a; --c-general: #0069dc; --c-meta: #e07b00;
+    --cell: 180px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141415; --pane: #1e1e20; --text: #ececec; --muted: #94949a; --line: #313134; --hover: #2a2a2d;
+      --tile: #252528; --accent: #5b8ff0; --accent-text: #0e0e10; --drop: #ff6b5c; --ok: #5cc98a;
+      --c-artist: #ff8a8b; --c-copyright: #c797ff; --c-character: #35c64a; --c-general: #4aa8ff; --c-meta: #f0b45a;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--text); display: flex; flex-direction: column; overflow: hidden;
+         font: 13px/1.45 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+  button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+  input { font: inherit; color: inherit; }
+  kbd { font: 11px ui-monospace, monospace; padding: 0 4px; border: 1px solid currentColor; border-radius: 3px;
+        opacity: .6; margin-left: 6px; }
+
+  /* ---------- header ---------- */
+  header { display: flex; align-items: center; gap: 14px; padding: 8px 14px; border-bottom: 1px solid var(--line);
+           background: var(--pane); flex-wrap: wrap; }
+  .dataset { font-weight: 650; font-size: 15px; margin-right: 4px; }
+  .seg { display: inline-flex; background: var(--bg); border-radius: 7px; padding: 2px; gap: 2px; }
+  .seg button { padding: 4px 11px; border-radius: 5px; color: var(--muted); white-space: nowrap; }
+  .seg button b { font-weight: 600; margin-left: 5px; font-variant-numeric: tabular-nums; }
+  .seg button:hover { color: var(--text); }
+  .seg button.on { background: var(--pane); color: var(--text); box-shadow: 0 0 0 1px var(--line); }
+  .seg.views button { font-weight: 600; font-size: 14px; }
+  .seg button[data-filter="dropped"] b { color: var(--drop); }
+  .seg button[data-filter="edited"] b { color: var(--accent); }
+  .grow { flex: 1; }
+  .search { position: relative; }
+  .search input { width: 260px; padding: 5px 10px 5px 28px; border: 1px solid var(--line); border-radius: 7px;
+                  background: var(--bg); outline: none; }
+  .search input:focus { border-color: var(--accent); }
+  .search svg { position: absolute; left: 8px; top: 50%; translate: 0 -50%; color: var(--muted); }
+  input[type=range] { width: 90px; accent-color: var(--muted); }
+
+  /* ---------- layout ---------- */
+  .body { flex: 1; display: grid; grid-template-columns: 1fr 380px; min-height: 0; }
+  main { overflow-y: auto; padding: 12px; outline: none; }
+  aside { border-left: 1px solid var(--line); background: var(--pane); overflow-y: auto; padding: 14px;
+          display: flex; flex-direction: column; gap: 12px; }
+  @media (max-width: 900px) {
+    .body { grid-template-columns: 1fr; grid-template-rows: 1fr auto; }
+    aside { border-left: 0; border-top: 1px solid var(--line); max-height: 45vh; }
+  }
+
+  /* ---------- tiles ---------- */
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--cell), 1fr)); gap: 6px; }
+  .tile { position: relative; background: var(--tile); border-radius: 6px; overflow: hidden; cursor: pointer;
+          user-select: none; content-visibility: auto; contain-intrinsic-size: var(--cell) var(--cell); }
+  .grid .tile { aspect-ratio: 1; }
+  .tile img { width: 100%; height: 100%; object-fit: contain; display: block; pointer-events: none; }
+  .tile::after { content: ""; position: absolute; inset: 0; border-radius: 6px; pointer-events: none;
+                 box-shadow: inset 0 0 0 3px transparent; }
+  .tile.sel::after { box-shadow: inset 0 0 0 3px var(--accent); }
+  .tile.focus.sel::after { box-shadow: inset 0 0 0 3px var(--accent), inset 0 0 0 5px var(--pane); }
+  .tile.dropped img { opacity: .22; filter: grayscale(1); }
+  .tile.dropped:not(.sel)::after { box-shadow: inset 0 0 0 2px var(--drop); }
+  .tile .x { position: absolute; top: 5px; right: 5px; width: 26px; height: 26px; border-radius: 50%;
+             display: grid; place-items: center; background: rgba(0,0,0,.55); color: #fff; opacity: 0;
+             transition: opacity .12s; }
+  .tile:hover .x { opacity: 1; }
+  .tile .x:hover { background: var(--drop); }
+  .tile .x .restore, .tile.dropped .x .trash { display: none; }
+  .tile.dropped .x { opacity: 1; background: var(--drop); }
+  .tile.dropped .x .restore { display: block; }
+  .tile.dropped .x:hover { background: var(--ok); }
+  .tile .dot { position: absolute; top: 9px; left: 9px; width: 9px; height: 9px; border-radius: 50%;
+               background: var(--accent); box-shadow: 0 0 0 2px var(--pane); display: none; }
+  .tile.edited .dot { display: block; }
+
+  /* ---------- duplicate groups ---------- */
+  .group { display: flex; gap: 12px; align-items: stretch; background: var(--pane); border: 1px solid var(--line);
+           border-radius: 10px; padding: 12px; margin-bottom: 12px; transition: opacity .3s; }
+  .group .members { flex: 1; display: flex; flex-wrap: wrap; gap: 12px; }
+  .group figure { margin: 0; width: calc(var(--cell) * 1.7); }
+  .group .tile { height: calc(var(--cell) * 2); }
+  .group figcaption { padding-top: 5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .group figcaption .best { color: var(--text); font-weight: 600; }
+  .group figcaption a { color: inherit; }
+  .group .info { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 3px; }
+  .group .info span { background: var(--bg); border-radius: 4px; padding: 0 6px; font-size: 12px; }
+  .group .confirm { align-self: stretch; width: 92px; border-radius: 8px; background: var(--accent);
+                    color: var(--accent-text); font-weight: 600; display: grid; place-items: center; }
+  .group.done { opacity: .6; }
+  .group.done .confirm { background: transparent; color: var(--ok); box-shadow: inset 0 0 0 1px var(--line);
+                         cursor: default; }
+  .group.leaving { opacity: 0; }
+
+  /* ---------- panel ---------- */
+  aside.empty { align-items: center; justify-content: center; color: var(--line); }
+  .preview { background: var(--tile); border-radius: 8px; display: grid; place-items: center; cursor: zoom-in;
+             height: min(46vh, 420px); overflow: hidden; }
+  .preview img { max-width: 100%; max-height: 100%; display: block; }
+  .preview.dropped img { opacity: .25; filter: grayscale(1); }
+  .preview.dropped { box-shadow: inset 0 0 0 2px var(--drop); }
+  .stack { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
+  .stack img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 4px; background: var(--tile); display: block; }
+  .stack img.dropped { opacity: .25; filter: grayscale(1); }
+  .meta { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .meta a { color: var(--text); font-weight: 600; }
+  .meta .count { color: var(--text); font-size: 18px; font-weight: 650; }
+  .actions { display: flex; gap: 8px; }
+  .btn { padding: 6px 12px; border-radius: 7px; font-weight: 600; box-shadow: inset 0 0 0 1px var(--line); }
+  .btn:hover { background: var(--hover); }
+  .btn.drop { background: var(--drop); color: #fff; box-shadow: none; flex: 1; }
+  .btn.keep { background: var(--ok); color: #fff; box-shadow: none; flex: 1; }
+  .btn.drop:hover, .btn.keep:hover { filter: brightness(1.08); }
+  .tags { display: flex; flex-direction: column; gap: 6px; }
+  .cat { display: flex; flex-wrap: wrap; gap: 4px; padding-left: 8px; border-left: 3px solid var(--cc); }
+  .chip { display: inline-flex; align-items: center; border-radius: 5px; background: var(--bg); color: var(--cc);
+          max-width: 100%; }
+  .chip .t { padding: 2px 4px 2px 8px; text-align: left; overflow-wrap: anywhere; }
+  .chip .t:hover { text-decoration: underline; }
+  .chip .n { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; padding-right: 2px; }
+  .chip .x, .chip .plus { padding: 2px 6px; color: var(--muted); border-radius: 5px; }
+  .chip .x:hover { color: var(--drop); }
+  .chip .plus:hover { color: var(--ok); }
+  .chip.partial { background: transparent; box-shadow: inset 0 0 0 1px var(--line); }
+  .more { color: var(--muted); padding: 2px 8px; }
+  .c-artist { --cc: var(--c-artist); } .c-copyright { --cc: var(--c-copyright); }
+  .c-character { --cc: var(--c-character); } .c-general { --cc: var(--c-general); } .c-meta { --cc: var(--c-meta); }
+  .add { position: relative; }
+  .add input { width: 100%; padding: 6px 10px; border: 1px dashed var(--line); border-radius: 7px; background: none;
+               outline: none; }
+  .add input:focus { border-style: solid; border-color: var(--accent); }
+
+  /* ---------- suggestions ---------- */
+  .suggest { position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 20; margin: 0; padding: 4px;
+             list-style: none; background: var(--pane); border: 1px solid var(--line); border-radius: 8px;
+             box-shadow: 0 8px 24px rgba(0,0,0,.18); min-width: 240px; }
+  .suggest:empty { display: none; }
+  .suggest li { display: flex; justify-content: space-between; gap: 10px; padding: 3px 8px; border-radius: 5px;
+                color: var(--cc); cursor: pointer; }
+  .suggest li small { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .suggest li.on { background: var(--hover); }
+
+  /* ---------- viewer ---------- */
+  #viewer { position: fixed; inset: 0; z-index: 50; background: rgba(8,8,10,.94); display: flex; flex-direction: column;
+            color: #eee; }
+  #viewer[hidden] { display: none; }
+  #viewer .bar { display: flex; gap: 14px; align-items: center; padding: 10px 16px; font-variant-numeric: tabular-nums; }
+  #viewer .bar a { color: inherit; font-weight: 600; }
+  #viewer .bar .pos { color: #999; }
+  #viewer .bar .flag { color: #ff6b5c; font-weight: 600; }
+  #viewer .stage { flex: 1; min-height: 0; display: grid; place-items: center; padding: 0 16px 16px; }
+  #viewer .stage img { max-width: 100%; max-height: 100%; display: block; }
+  #viewer.dropped .stage img { opacity: .3; outline: 3px solid #ff6b5c; }
+  #viewer .nav { position: absolute; top: 50%; translate: 0 -50%; font-size: 34px; color: #aaa; padding: 20px 14px; }
+  #viewer .nav:hover { color: #fff; }
+  #viewer .prev { left: 4px; } #viewer .next { right: 4px; }
+
+  #toast { position: fixed; bottom: 16px; left: 50%; translate: -50% 0; background: var(--drop); color: #fff;
+           padding: 8px 14px; border-radius: 8px; font-weight: 600; z-index: 60; }
+  #toast[hidden] { display: none; }
+  .empty-view { display: grid; place-items: center; height: 60%; color: var(--muted); font-size: 28px; }
+</style>
+</head>
+<body>
+<header>
+  <span class="dataset" id="dataset"></span>
+  <div class="seg views" id="views">
+    <button data-view="grid">图片<b id="nImages"></b></button>
+    <button data-view="dups">重复<b id="nPending"></b></button>
+  </div>
+  <div class="seg" id="filters"></div>
+  <span class="grow"></span>
+  <div class="search" id="searchBox">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+    <input id="search" placeholder="tag  -tag" autocomplete="off" spellcheck="false">
+    <ul class="suggest"></ul>
+  </div>
+  <input type="range" id="size" min="100" max="360" step="10" title="缩略图大小">
+</header>
+<div class="body">
+  <main id="main" tabindex="-1"></main>
+  <aside id="panel"></aside>
+</div>
+<div id="viewer" hidden>
+  <div class="bar"><span class="pos"></span><a target="_blank" rel="noreferrer"></a><span class="dims"></span>
+    <span class="flag"></span><span class="grow"></span><button class="close" title="Esc">✕</button></div>
+  <div class="stage"><img alt=""></div>
+  <button class="nav prev" title="←">‹</button><button class="nav next" title="→">›</button>
+</div>
+<div id="toast" hidden></div>
+
+<script>
+const DATA = __DATA__;
+const CATS = ["artist", "copyright", "character", "general", "meta"];
+const ICON = {
+  trash: '<svg class="trash" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>',
+  restore: '<svg class="restore" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M4 12a8 8 0 1 0 3-6.2M4 4v5h5"/></svg>',
+  grid: '<svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>',
+};
+
+const images = new Map(DATA.images.map(img => [img.key, img]));
+const groupOf = new Map();
+DATA.groups.forEach((g, i) => g.keys.forEach(k => groupOf.set(k, i)));
+
+const S = {
+  view: "grid", filter: "all", dupFilter: "pending", query: "", sizePx: +(localStorage.llkCell || 180),
+  sel: new Set(), anchor: null, focus: null, visible: [], tiles: new Map(), expandTags: false,
+};
+const $ = id => document.getElementById(id);
+const main = $("main"), panel = $("panel");
+
+function el(tag, props = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === "class") node.className = v;
+    else if (k === "html") node.innerHTML = v;
+    else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
+    else if (k in node) node[k] = v;
+    else node.setAttribute(k, v);
+  }
+  node.append(...children.flat().filter(c => c !== null && c !== undefined && c !== false));
+  return node;
+}
+const human = tag => tag.replaceAll("_", " ");
+const thumb = key => "/thumb/" + encodeURIComponent(key);
+const full = key => "/img/" + encodeURIComponent(key);
+const tagSet = img => new Set(Object.values(img.tags).flat());
+
+/* ---------- tag index ---------- */
+let tagIndex = new Map();  // tag -> {cat, n}
+function rebuildTagIndex() {
+  tagIndex = new Map();
+  for (const img of DATA.images)
+    for (const [cat, tags] of Object.entries(img.tags))
+      for (const t of tags) {
+        const e = tagIndex.get(t);
+        e ? e.n++ : tagIndex.set(t, {cat, n: 1});
+      }
+}
+
+/* ---------- server ---------- */
+let toastTimer;
+function toast(text) {
+  const t = $("toast");
+  t.textContent = text; t.hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.hidden = true, 3500);
+}
+async function api(path, body) {
+  try {
+    const r = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+    const data = await r.json();
+    if (!r.ok || !data.ok) throw new Error(data.error || r.status);
+    return data;
+  } catch (e) {
+    toast("保存失败：" + e.message);
+    throw e;
+  }
+}
+
+/* ---------- groups ---------- */
+const groupDone = g => g.confirmed || g.keys.filter(k => !images.get(k).dropped).length <= 1;
+
+/* ---------- filtering ---------- */
+function parseQuery(q) {
+  const toRe = s => new RegExp("^" + s.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replaceAll("*", ".*") + "$");
+  return q.trim().toLowerCase().split(/\s+/).filter(Boolean).map(tok => {
+    const neg = tok.startsWith("-") && tok.length > 1;
+    const body = neg ? tok.slice(1) : tok;
+    return {neg, re: body.includes("*") ? toRe(body) : null, tag: body};
+  });
+}
+function matches(img, terms) {
+  if (!terms.length) return true;
+  const tags = tagSet(img);
+  return terms.every(({neg, re, tag}) => {
+    const hit = re ? [...tags].some(t => re.test(t)) : tags.has(tag) || String(img.id) === tag;
+    return neg ? !hit : hit;
+  });
+}
+function visibleGroups() {
+  const terms = parseQuery(S.query);
+  return DATA.groups.map((g, i) => [g, i]).filter(([g]) =>
+    (S.dupFilter === "all" || !groupDone(g)) && g.keys.some(k => matches(images.get(k), terms)));
+}
+function visibleImages() {
+  const terms = parseQuery(S.query);
+  const f = {all: () => true, kept: i => !i.dropped, dropped: i => i.dropped, edited: i => i.edited}[S.filter];
+  return DATA.images.filter(img => f(img) && matches(img, terms));
+}
+
+/* ---------- header ---------- */
+function updateCounts() {
+  const dropped = DATA.images.filter(i => i.dropped).length;
+  const edited = DATA.images.filter(i => i.edited).length;
+  const pending = DATA.groups.filter(g => !groupDone(g)).length;
+  $("nImages").textContent = DATA.images.length - dropped;
+  $("nPending").textContent = pending;
+  const counts = S.view === "grid"
+    ? {all: DATA.images.length, kept: DATA.images.length - dropped, dropped, edited}
+    : {pending, all: DATA.groups.length};
+  for (const b of $("filters").children) b.querySelector("b").textContent = counts[b.dataset.filter];
+}
+function renderHeader() {
+  for (const b of $("views").children) b.classList.toggle("on", b.dataset.view === S.view);
+  const defs = S.view === "grid"
+    ? [["all", "全部"], ["kept", "保留"], ["dropped", "丢弃"], ["edited", "已改"]]
+    : [["pending", "待确认"], ["all", "全部"]];
+  const current = S.view === "grid" ? S.filter : S.dupFilter;
+  $("filters").replaceChildren(...defs.map(([key, label]) =>
+    el("button", {"data-filter": key, class: key === current ? "on" : ""}, label, el("b"))));
+  updateCounts();
+}
+
+/* ---------- main views ---------- */
+function tile(key) {
+  const img = images.get(key);
+  const node = el("div", {class: "tile", "data-key": key},
+    el("img", {src: thumb(key), loading: "lazy", decoding: "async", alt: ""}),
+    el("i", {class: "dot"}),
+    el("button", {class: "x", html: ICON.trash + ICON.restore, title: "D"}));
+  S.tiles.set(key, node);
+  paintTile(key);
+  return node;
+}
+function paintTile(key) {
+  const node = S.tiles.get(key);
+  if (!node) return;
+  const img = images.get(key);
+  node.classList.toggle("dropped", img.dropped);
+  node.classList.toggle("edited", img.edited);
+  node.classList.toggle("sel", S.sel.has(key));
+  node.classList.toggle("focus", S.focus === key);
+}
+
+function renderMain() {
+  S.tiles = new Map();
+  if (S.view === "grid") {
+    S.visible = visibleImages().map(i => i.key);
+    main.replaceChildren(S.visible.length ? el("div", {class: "grid"}, S.visible.map(tile))
+                                          : el("div", {class: "empty-view"}, "∅"));
+  } else {
+    const groups = visibleGroups();
+    S.visible = groups.flatMap(([g]) => g.keys);
+    main.replaceChildren(...(groups.length ? groups.map(([g, i]) => groupCard(g, i))
+                                           : [el("div", {class: "empty-view"}, "✓")]));
+  }
+  const vis = new Set(S.visible);
+  for (const k of [...S.sel]) if (!vis.has(k)) S.sel.delete(k);
+  if (S.focus && !vis.has(S.focus)) S.focus = null;
+  renderPanel();
+}
+
+function groupCard(g, index) {
+  const best = Math.max(...g.keys.map(k => images.get(k).w * images.get(k).h));
+  const confirm = el("button", {class: "confirm", "data-group": index});
+  const card = el("section", {class: "group", "data-group": index},
+    el("div", {class: "members"}, g.keys.map(key => {
+      const img = images.get(key);
+      const info = DATA.infoTags.filter(t => tagSet(img).has(t));
+      return el("figure", {},
+        tile(key),
+        el("figcaption", {},
+          el("div", {},
+            img.url ? el("a", {href: img.url, target: "_blank", rel: "noreferrer"}, "#" + img.id) : "#" + img.id,
+            " · ", el("span", {class: img.w * img.h === best ? "best" : ""}, `${img.w}×${img.h}`),
+            ` · ${img.kb} KB`),
+          info.length ? el("div", {class: "info"}, info.map(t => el("span", {}, human(t)))) : null));
+    })),
+    confirm);
+  paintGroup(card, g);
+  return card;
+}
+function paintGroup(card, g) {
+  const done = groupDone(g);
+  card.classList.toggle("done", done);
+  const btn = card.querySelector(".confirm");
+  btn.innerHTML = "";
+  btn.append(...(done ? ["✓"] : ["确认", el("kbd", {}, "↵")]));
+}
+function repaintGroupOf(key) {
+  if (S.view !== "dups" || !groupOf.has(key)) return;
+  const i = groupOf.get(key);
+  const card = main.querySelector(`.group[data-group="${i}"]`);
+  if (card) paintGroup(card, DATA.groups[i]);
+}
+
+async function confirmGroup(index) {
+  const g = DATA.groups[index];
+  if (groupDone(g)) return;
+  await api("/api/confirm", {group: index});
+  g.confirmed = true;
+  const card = main.querySelector(`.group[data-group="${index}"]`);
+  if (card) paintGroup(card, g);
+  updateCounts();
+  if (S.dupFilter === "pending" && card) {
+    const next = card.nextElementSibling;
+    const nextKey = next?.querySelector(".tile")?.dataset.key;
+    if (nextKey) { setSelection([nextKey], nextKey); next.scrollIntoView({behavior: "smooth", block: "start"}); }
+    card.classList.add("leaving");
+    setTimeout(() => {
+      card.remove();
+      S.visible = S.visible.filter(k => groupOf.get(k) !== index);
+      if (!main.querySelector(".group")) main.replaceChildren(el("div", {class: "empty-view"}, "✓"));
+    }, 300);
+  }
+}
+
+/* ---------- selection ---------- */
+function setSelection(keys, focus) {
+  const before = new Set([...S.sel, S.focus]);
+  S.sel = new Set(keys);
+  S.focus = focus ?? keys[keys.length - 1] ?? null;
+  for (const k of new Set([...before, ...S.sel])) paintTile(k);
+  if (S.focus) S.tiles.get(S.focus)?.scrollIntoView({block: "nearest"});
+  S.expandTags = false;
+  renderPanel();
+  if (!$("viewer").hidden) renderViewer();
+}
+function clickSelect(key, e) {
+  if (e.shiftKey && S.anchor && S.visible.includes(S.anchor)) {
+    const [a, b] = [S.visible.indexOf(S.anchor), S.visible.indexOf(key)].sort((x, y) => x - y);
+    const range = S.visible.slice(a, b + 1);
+    setSelection(e.ctrlKey || e.metaKey ? [...new Set([...S.sel, ...range])] : range, key);
+  } else if (e.ctrlKey || e.metaKey) {
+    const next = new Set(S.sel);
+    next.has(key) ? next.delete(key) : next.add(key);
+    S.anchor = key;
+    setSelection([...next], next.has(key) ? key : [...next].pop());
+  } else {
+    S.anchor = key;
+    setSelection([key], key);
+  }
+}
+function columns() {
+  const grid = main.querySelector(".grid");
+  return grid ? getComputedStyle(grid).gridTemplateColumns.split(" ").length : 1;
+}
+function move(delta, extend) {
+  if (!S.visible.length) return;
+  let i = S.focus ? S.visible.indexOf(S.focus) : -1;
+  if (S.view === "dups" && Math.abs(delta) > 1) {
+    const groups = [...new Set(S.visible.map(k => groupOf.get(k)))];
+    const gi = Math.max(0, Math.min(groups.length - 1, groups.indexOf(groupOf.get(S.focus)) + Math.sign(delta)));
+    i = S.visible.findIndex(k => groupOf.get(k) === groups[gi]);
+  } else {
+    i = i < 0 ? 0 : Math.max(0, Math.min(S.visible.length - 1, i + delta));
+  }
+  const key = S.visible[i];
+  if (extend && S.anchor) {
+    const [a, b] = [S.visible.indexOf(S.anchor), i].sort((x, y) => x - y);
+    setSelection(S.visible.slice(a, b + 1), key);
+  } else {
+    S.anchor = key;
+    setSelection([key], key);
+  }
+}
+
+/* ---------- drop ---------- */
+async function setDropped(keys, dropped) {
+  keys = keys.filter(k => images.get(k).dropped !== dropped);
+  if (!keys.length) return;
+  const apply = value => {
+    for (const k of keys) { images.get(k).dropped = value; paintTile(k); repaintGroupOf(k); }
+    updateCounts(); renderPanel();
+    if (!$("viewer").hidden) renderViewer();
+  };
+  apply(dropped);
+  try { await api("/api/drop", {keys, dropped}); } catch { apply(!dropped); }
+}
+function toggleDrop(keys, advance) {
+  const drop = keys.some(k => !images.get(k).dropped);
+  setDropped(keys, drop);
+  if (advance && keys.length === 1) move(1, false);
+}
+
+/* ---------- tags ---------- */
+async function editTags(keys, change) {
+  const edits = {};
+  for (const k of keys) {
+    const before = JSON.stringify(images.get(k).tags);
+    const tags = structuredClone(images.get(k).tags);
+    change(tags);
+    if (JSON.stringify(tags) !== before) edits[k] = tags;
+  }
+  if (Object.keys(edits).length) applyTagResult(await api("/api/tags", {tags: edits}));
+}
+async function revertTags(keys) {
+  applyTagResult(await api("/api/tags", {revert: keys.filter(k => images.get(k).edited)}));
+}
+function applyTagResult(data) {
+  for (const [k, v] of Object.entries(data.images)) Object.assign(images.get(k), v), paintTile(k);
+  rebuildTagIndex(); updateCounts(); renderPanel();
+}
+const removeTag = tag => tags => { for (const c in tags) tags[c] = tags[c].filter(t => t !== tag); };
+const addTag = (cat, tag) => tags => {
+  if (Object.values(tags).some(list => list.includes(tag))) return;
+  (tags[cat] ??= []).push(tag);
+};
+function parseTagInput(raw) {
+  let text = raw.trim().toLowerCase().replace(/\s+/g, "_");
+  let cat = null;
+  const m = text.match(/^(artist|copyright|character|general|meta):(.+)$/);
+  if (m) [, cat, text] = m;
+  if (!text) return null;
+  return {cat: cat || tagIndex.get(text)?.cat || "general", tag: text};
+}
+function searchTag(tag) {
+  $("search").value = S.query = tag;
+  if (S.view !== "grid") S.view = "grid";
+  S.filter = "all";
+  renderHeader(); renderMain();
+}
+
+/* ---------- panel ---------- */
+function chip(cat, tag, count, total, keys) {
+  const partial = count < total;
+  return el("span", {class: `chip c-${cat}` + (partial ? " partial" : "")},
+    el("button", {class: "t", onclick: () => searchTag(tag)}, human(tag)),
+    total > 1 ? el("span", {class: "n"}, partial ? `${count}/${total}` : "") : null,
+    partial ? el("button", {class: "plus", title: "+", onclick: () => editTags(keys, addTag(cat, tag))}, "+") : null,
+    el("button", {class: "x", title: "×", onclick: () => editTags(keys, removeTag(tag))}, "×"));
+}
+function renderPanel() {
+  const keys = S.visible.filter(k => S.sel.has(k));
+  panel.classList.toggle("empty", !keys.length);
+  if (!keys.length) { panel.replaceChildren(el("div", {html: ICON.grid})); return; }
+  const imgs = keys.map(k => images.get(k));
+  const single = imgs.length === 1 ? imgs[0] : null;
+  const anyKept = imgs.some(i => !i.dropped);
+  const edited = imgs.filter(i => i.edited).length;
+
+  const head = single
+    ? [el("div", {class: "preview" + (single.dropped ? " dropped" : ""), onclick: openViewer},
+          el("img", {src: thumb(single.key), alt: ""})),
+       el("div", {class: "meta"},
+          single.url ? el("a", {href: single.url, target: "_blank", rel: "noreferrer"}, "#" + single.id)
+                     : el("span", {}, "#" + single.id),
+          el("span", {}, `${single.w}×${single.h}`), el("span", {}, `${single.kb} KB`),
+          el("span", {}, single.rating),
+          el("a", {href: full(single.key), target: "_blank"}, "↗"))]
+    : [el("div", {class: "stack"}, imgs.slice(0, 8).map(i =>
+          el("img", {src: thumb(i.key), class: i.dropped ? "dropped" : "", alt: ""}))),
+       el("div", {class: "meta"}, el("span", {class: "count"}, `${imgs.length} 张`),
+          el("span", {}, `丢弃 ${imgs.filter(i => i.dropped).length}`))];
+
+  const actions = el("div", {class: "actions"},
+    el("button", {class: "btn " + (anyKept ? "drop" : "keep"), onclick: () => toggleDrop(keys, false)},
+      (anyKept ? "丢弃" : "恢复") + (single ? "" : ` ${anyKept ? imgs.filter(i => !i.dropped).length : imgs.length} 张`),
+      el("kbd", {}, "D")),
+    edited ? el("button", {class: "btn", onclick: () => revertTags(keys)},
+                "还原 tag" + (single ? "" : ` ${edited} 张`)) : null);
+
+  // 标签：单张按原顺序；多张取并集，按出现次数排序
+  const counts = new Map();
+  for (const img of imgs)
+    for (const [cat, tags] of Object.entries(img.tags))
+      for (const t of tags) {
+        const e = counts.get(t);
+        e ? e.n++ : counts.set(t, {cat, n: 1});
+      }
+  const LIMIT = 150;
+  let entries = [...counts.entries()];
+  if (!single) entries.sort((a, b) => b[1].n - a[1].n);
+  const hidden = !S.expandTags && entries.length > LIMIT ? entries.length - LIMIT : 0;
+  if (hidden) entries = entries.slice(0, LIMIT);
+  const cats = [...CATS, ...new Set(entries.map(([, e]) => e.cat).filter(c => !CATS.includes(c)))];
+  const tagRows = cats.map(cat => {
+    const list = entries.filter(([, e]) => e.cat === cat);
+    return list.length ? el("div", {class: `cat c-${cat}`},
+      list.map(([t, e]) => chip(cat, t, e.n, imgs.length, keys))) : null;
+  });
+  const more = hidden ? el("button", {class: "more", onclick: () => { S.expandTags = true; renderPanel(); }},
+                           `+${hidden}`) : null;
+
+  const input = el("input", {placeholder: "+ tag", autocomplete: "off", spellcheck: false});
+  const add = el("div", {class: "add"}, input, el("ul", {class: "suggest"}));
+  attachSuggest(input, {
+    pick: ({cat, tag}) => editTags(keys, addTag(cat, tag)).then(() => panel.querySelector(".add input")?.focus()),
+    raw: value => { const p = parseTagInput(value); if (p) return editTags(keys, addTag(p.cat, p.tag))
+                    .then(() => panel.querySelector(".add input")?.focus()); },
+  });
+
+  const focused = document.activeElement?.closest?.(".add") && panel.contains(document.activeElement);
+  panel.replaceChildren(...head, actions, el("div", {class: "tags"}, tagRows, more), add);
+  if (focused) input.focus();
+}
+
+/* ---------- suggestions ---------- */
+function attachSuggest(input, {pick, raw, token = v => v, replace}) {
+  const list = input.parentElement.querySelector(".suggest");
+  let items = [], active = -1;
+  const close = () => { list.replaceChildren(); items = []; active = -1; };
+  const paint = () => [...list.children].forEach((li, i) => li.classList.toggle("on", i === active));
+  const choose = item => { close(); pick(item); };
+  input.addEventListener("input", () => {
+    let q = token(input.value).toLowerCase().replace(/\s+/g, "_");
+    const m = q.match(/^(artist|copyright|character|general|meta):(.*)$/);
+    const forced = m ? m[1] : null;
+    if (m) q = m[2];
+    if (!q) return close();
+    const scored = [];
+    for (const [t, e] of tagIndex) {
+      const at = t.indexOf(q);
+      if (at >= 0) scored.push([at === 0 ? 0 : 1, -e.n, t, e]);
+    }
+    scored.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    items = scored.slice(0, 10).map(([, , t, e]) => ({tag: t, cat: forced || e.cat, n: e.n}));
+    active = -1;
+    list.replaceChildren(...items.map(it => el("li", {class: `c-${it.cat}`,
+      onmousedown: ev => { ev.preventDefault(); choose(it); }}, el("span", {}, human(it.tag)), el("small", {}, it.n))));
+  });
+  input.addEventListener("keydown", e => {
+    if (e.key === "ArrowDown" && items.length) { active = (active + 1) % items.length; paint(); e.preventDefault(); }
+    else if (e.key === "ArrowUp" && items.length) { active = (active - 1 + items.length) % items.length; paint(); e.preventDefault(); }
+    else if ((e.key === "Enter" || e.key === "Tab") && active >= 0) { e.preventDefault(); choose(items[active]); }
+    else if (e.key === "Enter") { e.preventDefault(); close(); raw?.(input.value); if (!replace) input.value = ""; }
+    else if (e.key === "Escape") { if (items.length) close(); else input.blur(); e.stopPropagation(); }
+  });
+  input.addEventListener("blur", () => setTimeout(close, 100));
+}
+
+/* ---------- viewer ---------- */
+const viewer = $("viewer");
+function openViewer() {
+  if (!S.focus) return;
+  viewer.hidden = false;
+  renderViewer();
+}
+function renderViewer() {
+  const img = images.get(S.focus);
+  if (!img) { viewer.hidden = true; return; }
+  viewer.classList.toggle("dropped", img.dropped);
+  viewer.querySelector(".pos").textContent = `${S.visible.indexOf(img.key) + 1} / ${S.visible.length}`;
+  const a = viewer.querySelector(".bar a");
+  a.textContent = "#" + img.id; a.href = img.url || full(img.key);
+  viewer.querySelector(".dims").textContent = `${img.w}×${img.h} · ${img.kb} KB`;
+  viewer.querySelector(".flag").textContent = img.dropped ? "丢弃" : "";
+  const stage = viewer.querySelector(".stage img");
+  if (stage.dataset.key !== img.key) {
+    stage.dataset.key = img.key;
+    stage.src = thumb(img.key);
+    const hi = new Image();
+    hi.onload = () => { if (stage.dataset.key === img.key) stage.src = hi.src; };
+    hi.src = full(img.key);
+  }
+}
+viewer.querySelector(".close").onclick = () => viewer.hidden = true;
+viewer.querySelector(".prev").onclick = () => move(-1, false);
+viewer.querySelector(".next").onclick = () => move(1, false);
+viewer.querySelector(".stage").onclick = e => { if (e.target.tagName !== "IMG") viewer.hidden = true; };
+
+/* ---------- events ---------- */
+main.addEventListener("click", e => {
+  const confirm = e.target.closest(".confirm");
+  if (confirm) return confirmGroup(+confirm.dataset.group);
+  const t = e.target.closest(".tile");
+  if (!t) { if (e.target === main || e.target.classList.contains("grid")) setSelection([]); return; }
+  if (e.target.closest(".x")) return toggleDrop(S.sel.has(t.dataset.key) ? [...S.sel] : [t.dataset.key], false);
+  clickSelect(t.dataset.key, e);
+});
+main.addEventListener("dblclick", e => {
+  const t = e.target.closest(".tile");
+  if (t && !e.target.closest(".x")) { setSelection([t.dataset.key], t.dataset.key); openViewer(); }
+});
+$("views").addEventListener("click", e => {
+  const b = e.target.closest("button");
+  if (!b || b.dataset.view === S.view) return;
+  S.view = b.dataset.view;
+  renderHeader(); renderMain(); main.scrollTop = 0;
+});
+$("filters").addEventListener("click", e => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  if (S.view === "grid") S.filter = b.dataset.filter; else S.dupFilter = b.dataset.filter;
+  renderHeader(); renderMain(); main.scrollTop = 0;
+});
+
+const search = $("search");
+let searchTimer;
+const lastToken = v => v.split(/\s+/).pop().replace(/^-/, "");
+const applySearch = () => { S.query = search.value; renderMain(); updateCounts(); };
+search.addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(applySearch, 180); });
+attachSuggest(search, {
+  token: lastToken, replace: true, raw: applySearch,
+  pick: ({tag}) => {
+    const parts = search.value.split(/\s+/);
+    const last = parts.pop() || "";
+    search.value = [...parts, (last.startsWith("-") ? "-" : "") + tag].join(" ") + " ";
+    applySearch();
+  },
+});
+
+const size = $("size");
+size.value = S.sizePx;
+const applySize = () => { document.documentElement.style.setProperty("--cell", size.value + "px"); localStorage.llkCell = size.value; };
+size.addEventListener("input", applySize);
+size.addEventListener("change", () => size.blur());
+
+document.addEventListener("keydown", e => {
+  if (e.target.matches("input:not([type=range])")) return;
+  const key = e.key;
+  if (key === "Escape") {
+    if (!viewer.hidden) viewer.hidden = true; else setSelection([]);
+  } else if (key === "/" ) {
+    e.preventDefault(); search.focus(); search.select();
+  } else if ((e.ctrlKey || e.metaKey) && key.toLowerCase() === "a") {
+    e.preventDefault(); S.anchor = S.visible[0]; setSelection([...S.visible], S.focus || S.visible[0]);
+  } else if (key === "ArrowRight" || key === "ArrowLeft") {
+    e.preventDefault(); move(key === "ArrowRight" ? 1 : -1, e.shiftKey);
+  } else if (key === "ArrowDown" || key === "ArrowUp") {
+    if (!viewer.hidden) return;
+    e.preventDefault();
+    const step = S.view === "grid" ? columns() : 2;
+    move(key === "ArrowDown" ? step : -step, e.shiftKey);
+  } else if (["d", "D", "Delete", "Backspace"].includes(key) && S.sel.size) {
+    e.preventDefault(); toggleDrop(S.visible.filter(k => S.sel.has(k)), true);
+  } else if (key === "Enter" && S.view === "dups" && S.focus) {
+    e.preventDefault(); confirmGroup(groupOf.get(S.focus));
+  } else if (key === " " || (key === "Enter" && S.view === "grid")) {
+    e.preventDefault(); viewer.hidden ? openViewer() : (viewer.hidden = true);
+  }
+});
+
+$("dataset").textContent = DATA.dataset;
+document.title = DATA.dataset + " · Review";
+applySize();
+rebuildTagIndex();
+renderHeader();
+renderMain();
+</script>
+</body>
+</html>
