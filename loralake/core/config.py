@@ -48,7 +48,6 @@ class Config:
     danbooru_api_key: str = ""
     hf_token: str = ""
     proxy: str = ""
-    rclone_remote: str = "gdrive:loralake"
     cdn_workers: int = 8
     mirror_workers: int = 32
 
@@ -67,7 +66,6 @@ class Config:
             danbooru_api_key=values.get("DANBOORU_API_KEY", ""),
             hf_token=values.get("HF_API_KEY") or os.environ.get("HF_TOKEN", ""),
             proxy=values.get("PROXY", ""),
-            rclone_remote=values.get("RCLONE_REMOTE") or "gdrive:loralake",
             cdn_workers=int(values.get("DOWNLOAD_WORKERS") or 8),
             mirror_workers=int(values.get("MIRROR_WORKERS") or 32),
         )

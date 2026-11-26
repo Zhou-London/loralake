@@ -11,10 +11,6 @@ HF_API_KEY=
 # HTTP 代理，如 http://127.0.0.1:7890
 PROXY=
 
-# Google Drive 的 rclone remote:路径：llk --upload 上传到这里，llk -d <Drive 链接> 用其中的 remote 下载
-# 默认 gdrive:loralake 即 Drive 的 MyDrive/loralake/
-# RCLONE_REMOTE=gdrive:loralake
-
 # ComfyUI 的 models 目录，底模/文本编码器/VAE 会在其下的
 # diffusion_models / text_encoders / vae 子目录中自动查找。
 #   原生 Linux: /home/<用户名>/ComfyUI/models
