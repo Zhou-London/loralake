@@ -5,12 +5,12 @@
 DANBOORU_LOGIN=
 DANBOORU_API_KEY=
 
-# Hugging Face token，用于 HF 镜像下载（需先在数据集页面同意访问条款）和 llk --upload（需要 write 权限）；
+# Hugging Face token，用于 HF 镜像下载（需先在数据集页面同意访问条款）、llk --upload（需要 write 权限）和 llk --fetch；
 # 留空则读环境变量 HF_TOKEN
 HF_API_KEY=
 
-# llk --upload 上传到的私有仓库，默认 <用户名>/loralake（不存在时自动创建）
-# HF_UPLOAD_REPO=
+# llk --upload / --fetch 使用的私有仓库，默认 <用户名>/loralake（上传时不存在会自动创建）
+# HF_REPO=
 
 # HTTP 代理，如 http://127.0.0.1:7890
 PROXY=

@@ -58,8 +58,8 @@ WSL 下仓库要放在 Linux 文件系统里（如 `~/loralake`），不要放�
 | 配置项 | 说明 | 默认 |
 |---|---|---|
 | `DANBOORU_LOGIN` / `DANBOORU_API_KEY` | Danbooru 用户名和 API key，需同时填写 | 匿名 |
-| `HF_API_KEY` | Hugging Face token，用于 HF 镜像下载（需先在数据集页面同意访问条款）和 `llk --upload`（需要 write 权限） | 读取环境变量 `HF_TOKEN` |
-| `HF_UPLOAD_REPO` | `llk --upload` 上传到的私有仓库 | `<用户名>/loralake` |
+| `HF_API_KEY` | Hugging Face token，用于 HF 镜像下载（需先在数据集页面同意访问条款）、`llk --upload`（需要 write 权限）和 `llk --fetch` | 读取环境变量 `HF_TOKEN` |
+| `HF_REPO` | `llk --upload` / `--fetch` 使用的私有仓库（旧名 `HF_UPLOAD_REPO` 仍可用） | `<用户名>/loralake` |
 | `PROXY` | HTTP 代理地址 | 无 |
 | `DOWNLOAD_WORKERS` | Danbooru CDN 并发数 | 8 |
 | `MIRROR_WORKERS` | HF 镜像并发数 | 32 |
@@ -72,7 +72,7 @@ WSL 下仓库要放在 Linux 文件系统里（如 `~/loralake`），不要放�
 `config`、`datasets/`、`derived/`、`output/`、`.cache/` 都不在 git 里。在新机器上 `git clone` + `./install.sh` 之后：
 
 - 复制旧机器的 `config`，按新机器改 `COMFY_MODELS_PATH` 等路径；或者重新从 `config.example` 填写
-- 需要继续用的数据集复制 `datasets/<tag>/`，或者用 `llk --pack` 打成一个文件带过去（见下文）；下载中断的数据集复制过去后重新运行 `llk -d` 可以续传
+- 需要继续用的数据集复制 `datasets/<tag>/`，或者在旧机器上 `llk --upload`、新机器上 `llk --fetch` 经 Hugging Face 中转（见下文）；下载中断的数据集复制过去后重新运行 `llk -d` 可以续传
 - 自己改过的 `presets/*.yaml` 记得提交或一并复制
 - `derived/` 是训练视图和 latent 缓存，可以不复制，训练时会重新生成；`.cache/` 是 HF 镜像索引，会自动重新下载
 - 模型文件放到新机器的 ComfyUI `models/` 下，或者用 `ANIMA_*` 指定
@@ -85,27 +85,30 @@ llk --unpack hatsune_miku                       # 解压 datasets/hatsune_miku.t
 llk --unpack /path/to/hatsune_miku.tar.zst      # 也可以直接给压缩包路径
 ```
 
-把整个数据集目录（图片、caption、`metadata.jsonl`、`review.json` 等，跳过下载到一半的 `.part` 文件）打成一个 tar + zstd 压缩包，放在 `datasets/` 下。图片本身是 WebP，基本压不小，打包主要是方便拷贝、上传网盘或 Colab；压缩包带校验和，传输损坏会在解压时报错。
+把整个数据集目录（图片、caption、`metadata.jsonl`、`review.json` 等，跳过下载到一半的 `.part` 文件）打成一个 tar + zstd 压缩包，放在 `datasets/` 下。图片本身是 WebP，基本压不小，打包主要是方便拷贝和上传；压缩包带校验和，传输损坏会在解压时报错。
 
 解压时数据集名取自压缩包内容。目标已存在时会先询问，确认后整个替换（`-y` 跳过询问）；解压失败不会动原有的数据集。
 
-压缩包可以放到 Google Drive，在新机器上用 `llk -d <分享链接>` 直接下载并解压（见下文「从 Google Drive 下载」）。
+`llk --upload` 会自动打包上传，`llk --fetch` 会自动下载解压，经 Hugging Face 中转时不需要手动打包。
 
-### 上传到 Hugging Face：`--upload`
+### 经 Hugging Face 中转：`--upload` / `--fetch`
 
-在计算中心等远程机器上训练时，用它把结果传到自己的 Hugging Face 私有仓库：
+在机器之间搬训练输出和数据集，比如在计算中心训练完把结果取回本地。中转用自己的 Hugging Face 私有仓库：
 
 ```bash
 llk --upload kincora_20261126-1645   # 训练输出 output/<名字>/ → 仓库的 output/<名字>/
 llk --upload kincora                 # 数据集：打包后上传到仓库的 datasets/kincora.tar.zst
+
+llk --fetch kincora_20261126-1645    # 仓库的 output/<名字>/ → 本地 output/<名字>/
+llk --fetch kincora                  # 仓库的 datasets/kincora.tar.zst → datasets/，并自动解压
 ```
 
-- 使用 `config` 里的 `HF_API_KEY`，不需要浏览器登录，token 不会过期。token 要有 write 权限（在 <https://huggingface.co/settings/tokens> 生成 Write 类型，或 Fine-grained 类型勾选自己仓库的写权限）。
-- 仓库默认是 `<用户名>/loralake`，私有的 dataset 仓库，不存在时自动创建；可用 `HF_UPLOAD_REPO` 指定。
-- 名字先按 `output/` 下的训练输出查找，找不到再按数据集查找。上传前会确认，`-y` 跳过。
+- 使用 `config` 里的 `HF_API_KEY`，不需要浏览器登录，token 不会过期。上传需要 write 权限，只取回的机器用 read 权限即可（在 <https://huggingface.co/settings/tokens> 生成 Write 类型，或 Fine-grained 类型勾选自己仓库的写权限）。
+- 仓库默认是 `<用户名>/loralake`，私有的 dataset 仓库，不存在时自动创建；可用 `HF_REPO` 指定。
+- 上传时名字先按本地 `output/` 下的训练输出查找，找不到再按数据集查找；取回时按仓库里的训练输出和数据集查找，找不到会列出仓库里有哪些。覆盖本地已有的内容前会确认，`-y` 跳过。
 - 训练输出整个目录上传；训练中断时目录里还有训练状态，可以拿到别的机器上续训。
-- 中断后重新运行同一命令即可，没有变化的大文件不会重复传。会使用 `config` 里的 `PROXY`。很多计算中心只有登录节点能上网，这时在登录节点上运行。
-- 取回：在仓库网页上下载，或者用 `hf download <用户名>/loralake --repo-type dataset --include "output/<名字>/*" --local-dir .`；数据集压缩包下载到 `datasets/` 后运行 `llk --unpack <名字>`。
+- 中断后重新运行同一命令即可：上传时没有变化的大文件不会重复传，取回时从断点继续（临时目录 `output/.hf-fetch`、`datasets/.hf-fetch`）。会使用 `config` 里的 `PROXY`。很多计算中心只有登录节点能上网，这时在登录节点上运行。
+- 取回的训练输出替换本地同名目录，中断的训练取回后可以直接 `llk --resume <名字>`。
 
 ## 搜索 tag：`-s` / `--search`
 
@@ -133,16 +136,6 @@ llk -d hatsune_miku --limit 500 -y
 | `--workers N` | 覆盖 `DOWNLOAD_WORKERS` |
 | `--mirror` / `--no-mirror` | 强制启用 / 禁用 HF 镜像 |
 | `-y` / `--yes` | 跳过确认 |
-
-### 从 Google Drive 下载
-
-```bash
-llk -d "https://drive.google.com/file/d/<文件ID>/view?usp=sharing"
-```
-
-`-d` 后面是 Google Drive 的文件分享链接时，把这个文件下载到 `datasets/`（文件名沿用 Drive 上的）；如果是 `llk --pack` 生成的 `.tar.zst`，下载完自动解压。文件要在 Drive 里设为「知道链接的任何人可查看」，不需要登录；只支持单个文件，不支持文件夹。链接里有 `&` 时要加引号。
-
-会使用 `config` 里的 `PROXY`。中断后重新运行同一命令会从断点继续（临时文件 `datasets/.gdrive-<文件ID>.part`）。Colab 上 Drive 已经挂载，直接 `llk --unpack /content/drive/MyDrive/...` 即可。
 
 ### 下载来源
 

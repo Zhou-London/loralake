@@ -11,21 +11,18 @@ from .archive import pack, unpack
 from .core.config import Config
 from .core.console import console
 from .download.commands import download, search
-from .download.gdrive import download_drive, is_drive_url
 from .preprocess.commands import preprocess
 from .preprocess.review import DEFAULT_PORT, review
 from .preprocess.tags import canonical_tags
 from .presets import Preset, PresetError, load_preset
+from .hub import fetch, upload
 from .train.commands import resume, train
-from .upload import upload
 
 DEFAULT_SEARCH_LIMIT = 10
 DEFAULT_PREVIEW_SAMPLES = 5
 # 续训时这些选项沿用 run.json 里的值
 RESUME_FIXED = frozenset({"preset_name", "trigger", "remove_tags", "exclude_images", "name", "rank", "learning_rate",
                           "epochs", "batch_size", "resolution", "save_every", "gradient_checkpointing", "dedup"})
-# 从 Google Drive 下载单个文件时用不到的下载选项
-DRIVE_UNUSED = frozenset({"output", "limit", "workers", "use_mirror", "include", "exclude"})
 
 app = typer.Typer(
     add_completion=False,
@@ -77,6 +74,7 @@ def main(
     pack_dataset: Annotated[Optional[str], typer.Option("--pack", metavar="DATASET")] = None,
     unpack_archive: Annotated[Optional[str], typer.Option("--unpack", metavar="ARCHIVE")] = None,
     upload_name: Annotated[Optional[str], typer.Option("--upload", metavar="RUN|DATASET")] = None,
+    fetch_name: Annotated[Optional[str], typer.Option("--fetch", metavar="RUN|DATASET")] = None,
     extra_tags: Annotated[Optional[list[str]], typer.Argument(hidden=True, metavar="TAG")] = None,
     preset_name: Annotated[Optional[str], typer.Option("--config", "-c", metavar="PRESET")] = None,
     output: Annotated[Optional[Path], typer.Option(file_okay=False)] = None,
@@ -104,7 +102,7 @@ def main(
         ("--download", download_tag), ("--search", search_tag),
         ("--preprocess", preprocess_dataset), ("--train", train_dataset), ("--resume", resume_run),
         ("--review", review_dataset), ("--pack", pack_dataset), ("--unpack", unpack_archive),
-        ("--upload", upload_name)) if value]
+        ("--upload", upload_name), ("--fetch", fetch_name)) if value]
     if len(actions) > 1:
         raise click.UsageError(f"{' 和 '.join(actions)} 不能同时使用")
 
@@ -126,6 +124,9 @@ def main(
     if upload_name:
         raise typer.Exit(upload(upload_name, yes, Config.load()))
 
+    if fetch_name:
+        raise typer.Exit(fetch(fetch_name, yes, Config.load()))
+
     if preprocess_dataset or train_dataset:
         train_overrides = given(rank=rank, learning_rate=learning_rate, epochs=epochs, batch_size=batch_size,
                                 resolution=resolution, save_every_epochs=save_every,
@@ -143,18 +144,9 @@ def main(
     first_tag = download_tag or search_tag
     if not first_tag:
         if extra_tags:
-            raise click.UsageError("需要 --download、--search、--preprocess、--train、--review、--pack、--unpack 或 --upload")
+            raise click.UsageError("需要 --download、--search、--preprocess、--train、--review、--pack、--unpack、--upload 或 --fetch")
         typer.echo(ctx.get_help())
         raise typer.Exit()
-
-    if download_tag and is_drive_url(download_tag):
-        unused = [f"--{param.name.replace('_', '-')}" for param in ctx.command.params
-                  if param.name in DRIVE_UNUSED and ctx.params.get(param.name) is not None]
-        if extra_tags:
-            raise click.UsageError("Google Drive 链接后面不能再跟 tag（链接含 & 时要加引号）")
-        if unused:
-            raise click.UsageError(f"从 Google Drive 下载时不能指定 {', '.join(unused)}")
-        raise typer.Exit(download_drive(download_tag, yes, Config.load()))
 
     config = Config.load()
     if config.has_partial_danbooru_auth:
