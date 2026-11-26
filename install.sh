@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# loralake 一键安装：子模块、conda 环境（含 CUDA 13.0 版 PyTorch 和 diffusion-pipe 依赖）、config。
+# loralake 一键安装：子模块、conda 环境（含 CUDA 13.0 版 PyTorch、diffusion-pipe 依赖，没有 neovim 时一并装上）、config。
 # 可重复运行，已完成的步骤会跳过或增量更新。
 #
 #   ./install.sh               按 env/constraints.txt 锁定的版本安装（推荐）
@@ -79,6 +79,7 @@ install_system() {
 if (( SYSTEM )); then
   step "安装 diffusion-pipe 依赖和 loralake 到 $("$PYTHON" -c 'import sys; print(sys.executable)')"
   install_system
+  command -v nvim >/dev/null || echo "没有 neovim，--system 模式不自动安装（需要时: sudo apt install -y neovim）"
 else
 
 step "准备 conda"
@@ -111,6 +112,13 @@ set +u
 conda activate "$ENV_NAME"
 set -u
 conda install -y -c conda-forge "cuda-nvcc=${CUDA_VERSION}" "cuda-version=${CUDA_VERSION}"
+
+if command -v nvim >/dev/null; then
+  echo "已有 neovim: $(command -v nvim)"
+else
+  step "安装 neovim 到 ${ENV_NAME} 环境"
+  conda install -y -c conda-forge nvim
+fi
 
 step "安装 PyTorch（CUDA ${CUDA_VERSION}）"
 python -m pip install --upgrade pip

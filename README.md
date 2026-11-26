@@ -26,7 +26,7 @@ cd ~/loralake
 ./install.sh
 ```
 
-`install.sh` 会依次：初始化 diffusion-pipe 子模块 → 没有 conda 时安装 [Miniforge](https://github.com/conda-forge/miniforge) 到 `~/miniforge3` → 创建 `loralake` 环境（Python 3.12、`cuda-nvcc` 13.0、PyTorch 2.9.0+cu130）→ 安装 diffusion-pipe 依赖和 `llk` → 从 `config.example` 生成 `config` → 检查 GPU 是否可用。脚本可重复运行，更新代码后再跑一次即可同步依赖。
+`install.sh` 会依次：初始化 diffusion-pipe 子模块 → 没有 conda 时安装 [Miniforge](https://github.com/conda-forge/miniforge) 到 `~/miniforge3` → 创建 `loralake` 环境（Python 3.12、`cuda-nvcc` 13.0、PyTorch 2.9.0+cu130；系统里没有 `nvim` 时一并装上 conda-forge 的 neovim）→ 安装 diffusion-pipe 依赖和 `llk` → 从 `config.example` 生成 `config` → 检查 GPU 是否可用。脚本可重复运行，更新代码后再跑一次即可同步依赖。
 
 - 依赖版本默认按 [env/constraints.txt](env/constraints.txt) 锁定（一套验证过能训练的组合）。想用 diffusion-pipe 依赖的最新版：`./install.sh --latest`。
 - 环境名可用 `LORALAKE_ENV=xxx ./install.sh` 修改。
