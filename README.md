@@ -184,7 +184,7 @@ datasets/<tag>/
 llk --review hatsune_miku
 ```
 
-在本机启动一个页面（默认 <http://localhost:8765/>，端口被占用时自动顺延，也可用 `--port` 指定），WSL 下直接用 Windows 的浏览器打开。这一步只针对数据集本身，与模型和预设无关，在预处理之前做；修改实时保存到 `datasets/<tag>/review.json`，之后的预处理和训练都会先应用它。完成后在终端按 Ctrl+C 退出。
+在本机启动一个页面（默认 <http://localhost:8765/>，端口被占用时自动顺延，也可用 `--port` 指定），WSL 下直接用 Windows 的浏览器打开。这一步只针对数据集本身，与模型无关，在预处理之前做（预设里只用到 `dedup_threshold`，可用 `-c` 选择）；修改实时保存到 `datasets/<tag>/review.json`，之后的预处理和训练都会先应用它。完成后在终端按 Ctrl+C 退出。
 
 - **图片**：浏览全部图片。搜索框按 tag 筛选（空格分隔多个，`-tag` 排除，支持 `*` 通配和帖子 id），顶部可切换全部 / 保留 / 丢弃 / 已改。
 - **重复**：逐组比较疑似重复的图片，丢弃不要的后点「确认」（或按 Enter）。分辨率最高的一张加粗，下方列出 `textless version`、`watermark` 等有助于判断的 tag。
@@ -195,7 +195,7 @@ llk --review hatsune_miku
 去重分两步。Danbooru 上同一张插画常常有好几份：不同尺寸的重传、去字版、加了 logo 或标题的封面、表情差分、去背景版等，重复的图会让 LoRA 过拟合到那几张构图上。
 
 1. **自动去除**：感知哈希（pHash）相近、宽高比相同，并且缩小后逐块比较几乎没有差别的图片，视为同一张图（缩放、重新编码、轻微调色），只保留像素最多的一张。这一步只处理非常确定的情况，页面上不显示被去除的图。
-2. **人工确认**：其余相近的图片（去字版、加 logo 或签名、表情差分、去背景、裁切等）按组列出，确认前全部保留。预处理和训练时会提示待确认的组数。只剩一张没丢弃的组自动算作已确认；新下载的图片和已确认的图片相近时，所在的组会重新变成待确认。
+2. **人工确认**：其余相近的图片（去字版、加 logo 或签名、表情差分、去背景、裁切等）按组列出，确认前全部保留。这一步宁可多列，会有一些只是构图相似的图，点「确认」跳过即可；嫌多或嫌少可以调预设的 `dedup_threshold`。预处理和训练时会提示待确认的组数。只剩一张没丢弃的组自动算作已确认；新下载的图片和已确认的图片相近时，所在的组会重新变成待确认。
 
 改过的 tag 会替换 `metadata.jsonl` 里的 tag，参与预处理的 `exclude_images` 判断和 caption 生成；在面板上点「还原 tag」恢复原样。缩略图缓存在 `derived/<tag>/.thumbs/`。
 
@@ -261,6 +261,7 @@ preprocess:
   trigger: ""
   exclude_images: []     # 带这些 tag 的图片不参与训练，如 [ai-generated, lowres, sketch]
   dedup: true             # 去重（自动去除像素相同的图片）
+  dedup_threshold: 16     # 疑似重复的 pHash 距离上限（0～64），越大 --review 里列出的组越多；自动去除基本不受影响
   remove_tags: []
   prefix_tags: []
   include_rating: true    # caption 中加入 safe / sensitive / nsfw / explicit

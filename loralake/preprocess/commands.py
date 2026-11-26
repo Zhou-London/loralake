@@ -28,7 +28,7 @@ def print_selection(dataset_dir: Path, available: int, selection: Selection) -> 
                       f"llk --review {dataset_dir.name}")
 
 
-def load_selection(dataset_dir: Path, exclude_images: frozenset[str], dedup: bool) -> Selection:
+def load_selection(dataset_dir: Path, exclude_images: frozenset[str], dedup: int | None) -> Selection:
     available = available_records(dataset_dir)
     with console.status("正在查重 ..."):
         selection = select_and_dedup(dataset_dir, available, exclude_images, dedup)
@@ -36,7 +36,7 @@ def load_selection(dataset_dir: Path, exclude_images: frozenset[str], dedup: boo
     return selection
 
 
-def preprocess(dataset: str, exclude_images: frozenset[str], dedup: bool, caption_options: AnimaCaptionOptions,
+def preprocess(dataset: str, exclude_images: frozenset[str], dedup: int | None, caption_options: AnimaCaptionOptions,
                samples: int, output: Path | None, config: Config) -> int:
     dataset_dir = resolve_dataset(dataset, config.dataset_dir)
     if dataset_dir is None:

@@ -212,7 +212,7 @@ def _bind(port: int, handler: type[BaseHTTPRequestHandler]) -> ThreadingHTTPServ
     raise OSError(errno.EADDRINUSE, f"端口 {port}-{port + PORT_ATTEMPTS - 1} 都被占用，请用 --port 指定其他端口")
 
 
-def review(dataset: str, port: int, config: Config) -> int:
+def review(dataset: str, port: int, dedup_threshold: int, config: Config) -> int:
     dataset_dir = resolve_dataset(dataset, config.dataset_dir)
     if dataset_dir is None:
         console.print(f"[red]找不到数据集 {dataset}（需要包含 {METADATA_FILE}）")
@@ -224,7 +224,7 @@ def review(dataset: str, port: int, config: Config) -> int:
     curation = Curation.load(dataset_dir)
     with console.status("正在查重 ..."):
         dedup = deduplicate(dataset_dir, [curation.apply(record) for record in records], curation.reviewed,
-                            curation.dropped)
+                            curation.dropped, dedup_threshold)
     session = ReviewSession(dataset_dir, records, dedup, curation, config.derived_dir / dataset_dir.name / THUMB_DIR)
     try:
         server = _bind(port, _handler(session))

@@ -7,6 +7,7 @@ import yaml
 
 from .core.config import ROOT
 from .preprocess.anima import AnimaCaptionOptions
+from .preprocess.dedup import DEFAULT_THRESHOLD, MAX_THRESHOLD
 from .preprocess.tags import canonical_tags
 from .train.settings import TrainSettings
 
@@ -28,8 +29,14 @@ class Preset:
     source: Path | None = None
     exclude_images: frozenset[str] = frozenset()
     dedup: bool = True
+    dedup_threshold: int = DEFAULT_THRESHOLD
     caption: AnimaCaptionOptions = field(default_factory=AnimaCaptionOptions)
     train: TrainSettings = field(default_factory=TrainSettings)
+
+    @property
+    def dedup_distance(self) -> int | None:
+        """去重时用的阈值，不去重时为 None。"""
+        return self.dedup_threshold if self.dedup else None
 
 
 def resolve_preset_path(name_or_path: str | None) -> Path | None:
@@ -113,10 +120,15 @@ def load_preset(name_or_path: str | None) -> Preset:
     exclude_images = canonical_tags(_as_tag_list(preprocess.pop("exclude_images", []), "preprocess.exclude_images"))
     try:
         dedup = _coerce(preprocess.pop("dedup", True), bool, "preprocess.dedup")
+        dedup_threshold = _coerce(preprocess.pop("dedup_threshold", DEFAULT_THRESHOLD), int,
+                                  "preprocess.dedup_threshold")
+        if not 0 <= dedup_threshold <= MAX_THRESHOLD:
+            raise PresetError(f"preprocess.dedup_threshold 应在 0～{MAX_THRESHOLD} 之间")
         return Preset(
             source=path,
             exclude_images=exclude_images,
             dedup=dedup,
+            dedup_threshold=dedup_threshold,
             caption=apply_options(AnimaCaptionOptions(), preprocess, "preprocess"),
             train=apply_options(TrainSettings(), _section(document, "train"), "train"),
         )

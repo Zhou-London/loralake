@@ -31,12 +31,15 @@ def select_records(records: Iterable[Record], exclude_images: frozenset[str]) ->
 
 
 def select_and_dedup(dataset_dir: Path, records: Iterable[Record], exclude_images: frozenset[str],
-                     dedup: bool) -> Selection:
-    """先应用 llk --review 的整理结果（改过的 tag），再按 tag 排除、去重，最后去掉人工丢弃的图片。"""
+                     dedup: int | None) -> Selection:
+    """先应用 llk --review 的整理结果（改过的 tag），再按 tag 排除、去重，最后去掉人工丢弃的图片。
+
+    dedup: 去重的 pHash 距离阈值，None 表示不去重。
+    """
     curation = Curation.load(dataset_dir)
     selection = select_records((curation.apply(record) for record in records), exclude_images)
-    if dedup and selection.records:
-        selection.dedup = deduplicate(dataset_dir, selection.records, curation.reviewed, curation.dropped)
+    if dedup is not None and selection.records:
+        selection.dedup = deduplicate(dataset_dir, selection.records, curation.reviewed, curation.dropped, dedup)
         selection.records = selection.dedup.records
     kept = [record for record in selection.records if record.key not in curation.dropped]
     selection.dropped_count = len(selection.records) - len(kept)

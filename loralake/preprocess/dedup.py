@@ -1,6 +1,6 @@
 """查重：自动去掉像素级相同的图片，其余疑似重复交给人工确认（llk --review）。
 
-1. 64 位感知哈希（pHash）距离不超过 CANDIDATE_DISTANCE 的两张图是候选。
+1. 64 位感知哈希（pHash）距离不超过阈值（预设的 preprocess.dedup_threshold，默认 DEFAULT_THRESHOLD）的两张图是候选。
 2. 宽高比相同、并且缩到 THUMB_SIZE 后逐块比较的最大差异不超过 SAME_MAX_BLOCK_DIFF 的，
    视为同一张图（缩放、重新编码、轻微调色），自动只保留一张。
 3. 其余候选（去字版、加 logo、表情差分、去背景等）按连通关系分组，等待人工确认；
@@ -21,7 +21,12 @@ from ..core.dataset import Record
 from .tags import all_tags
 
 CACHE_FILE = ".dedup_cache.json"
-CANDIDATE_DISTANCE = 10
+# 只决定哪些图交给人工确认，自动去除另有逐块比较把关，所以放宽一些。
+# 中位数二值化的哈希恰好一半位为 1，距离总是偶数；实测 12～14 大多是真的差分，16 约三分之一，18 起基本是无关的图
+DEFAULT_THRESHOLD = 16
+# 引入可调阈值之前的固定值，run.json 里 "dedup": true 的旧训练按它续训
+LEGACY_THRESHOLD = 10
+MAX_THRESHOLD = 64
 SAME_ASPECT_TOLERANCE = 0.02
 SAME_MAX_BLOCK_DIFF = 10.0
 THUMB_SIZE = 128
@@ -150,7 +155,7 @@ def _save_cache(dataset_dir: Path, cache: dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
-def find_candidates(dataset_dir: Path, records: list[Record]) -> list[Candidate]:
+def find_candidates(dataset_dir: Path, records: list[Record], threshold: int) -> list[Candidate]:
     cache = _load_cache(dataset_dir)
     paths = {record.key: dataset_dir / record.file for record in records}
     signatures = {key: _signature(path) for key, path in paths.items()}
@@ -166,7 +171,7 @@ def find_candidates(dataset_dir: Path, records: list[Record]) -> list[Candidate]
     near: list[tuple[str, str, int]] = []
     for i in range(len(keys) - 1):
         distances = np.bitwise_count(hashes[i] ^ hashes[i + 1:])
-        for j in np.nonzero(distances <= CANDIDATE_DISTANCE)[0]:
+        for j in np.nonzero(distances <= threshold)[0]:
             near.append((keys[i], keys[i + 1 + j], int(distances[j])))
 
     pair_cache = cache["pairs"]
@@ -201,10 +206,10 @@ def _keeper_rank(record: Record) -> tuple[int, int, int]:
 
 
 def deduplicate(dataset_dir: Path, records: list[Record], reviewed: set[tuple[str, str]],
-                dropped: set[str]) -> DedupResult:
-    """reviewed: 已确认的图片对；dropped: 已丢弃的图片。至多只剩一张没丢弃的组也算已确认。"""
+                dropped: set[str], threshold: int) -> DedupResult:
+    """reviewed: 已确认的图片对；dropped: 已丢弃的图片；threshold: 候选的 pHash 距离上限。至多只剩一张没丢弃的组也算已确认。"""
     by_key = {record.key: record for record in records}
-    candidates = find_candidates(dataset_dir, records)
+    candidates = find_candidates(dataset_dir, records, threshold)
 
     same = _UnionFind()
     for candidate in candidates:

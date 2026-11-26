@@ -12,6 +12,7 @@ from ..core.console import confirm, console
 from ..core.dataset import METADATA_FILE, dataset_name, resolve_dataset
 from ..preprocess.anima import AnimaCaptionOptions, anima_caption
 from ..preprocess.commands import load_selection
+from ..preprocess.dedup import LEGACY_THRESHOLD
 from ..preprocess.selection import Selection
 from ..preprocess.views import materialize_view
 from ..presets import PresetError, apply_options
@@ -39,7 +40,7 @@ def _json_default(value: object) -> Any:
     raise TypeError(f"无法序列化 {type(value).__name__}")
 
 
-def write_manifest(run_dir: Path, dataset_dir: Path, images: int, exclude_images: frozenset[str], dedup: bool,
+def write_manifest(run_dir: Path, dataset_dir: Path, images: int, exclude_images: frozenset[str], dedup: int | None,
                    caption_options: AnimaCaptionOptions, settings: TrainSettings, buckets: BucketPlan,
                    models: AnimaModels, preset: Path | None) -> None:
     manifest = {
@@ -79,7 +80,7 @@ def print_plan(images: int, trigger: str, settings: TrainSettings, buckets: Buck
     console.print(table)
 
 
-def _plan(dataset_dir: Path, exclude_images: frozenset[str], dedup: bool,
+def _plan(dataset_dir: Path, exclude_images: frozenset[str], dedup: int | None,
           settings: TrainSettings) -> tuple[Selection, BucketPlan] | None:
     selection = load_selection(dataset_dir, exclude_images, dedup)
     if not selection.records:
@@ -154,7 +155,7 @@ def _run(run_dir: Path, train_config_file: Path, settings: TrainSettings, bucket
     return 0
 
 
-def train(dataset: str, exclude_images: frozenset[str], dedup: bool, caption_options: AnimaCaptionOptions,
+def train(dataset: str, exclude_images: frozenset[str], dedup: int | None, caption_options: AnimaCaptionOptions,
           settings: TrainSettings, preset: Path | None, name: str | None, yes: bool, config: Config) -> int:
     try:
         diffpipe.ensure_installed()
@@ -196,6 +197,17 @@ def _json_equal(value: object, stored: object) -> bool:
     return json.loads(json.dumps(value, default=_json_default)) == stored
 
 
+def _recorded_dedup(value: object) -> int | None:
+    """run.json 里的 dedup：阈值，null/false 表示没去重；旧版本记录的 true 对应当时固定的阈值。"""
+    if value is True:
+        return LEGACY_THRESHOLD
+    if value is None or value is False:
+        return None
+    if not isinstance(value, int):
+        raise TypeError(f"dedup 的值 {value!r} 无效")
+    return value
+
+
 def resume(run: str, yes: bool, config: Config) -> int:
     try:
         diffpipe.ensure_installed()
@@ -221,7 +233,7 @@ def resume(run: str, yes: bool, config: Config) -> int:
         settings = apply_options(TrainSettings(), manifest["settings"], "settings")
         caption_options = apply_options(AnimaCaptionOptions(), manifest["caption"], "caption")
         exclude_images = frozenset(manifest["exclude_images"])
-        dedup = bool(manifest.get("dedup", False))
+        dedup = _recorded_dedup(manifest.get("dedup"))
         recorded_dataset = Path(manifest["dataset"])
         recorded_dit = Path(manifest["models"]["dit"]).name
         recorded_buckets = manifest["buckets"]

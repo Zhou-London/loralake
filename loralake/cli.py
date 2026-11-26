@@ -113,7 +113,10 @@ def main(
         raise typer.Exit(resume(resume_run, yes, Config.load()))
 
     if review_dataset:
-        raise typer.Exit(review(review_dataset, port, Config.load()))
+        preset = resolve_preset(preset_name, None, None, None, None, {})
+        if preset.source:
+            console.print(f"[dim]预设: {preset.source}")
+        raise typer.Exit(review(review_dataset, port, preset.dedup_threshold, Config.load()))
 
     if pack_dataset:
         raise typer.Exit(pack(pack_dataset, yes, Config.load()))
@@ -135,10 +138,10 @@ def main(
         if preset.source:
             console.print(f"[dim]预设: {preset.source}")
         if preprocess_dataset:
-            raise typer.Exit(preprocess(preprocess_dataset, preset.exclude_images, preset.dedup, preset.caption,
+            raise typer.Exit(preprocess(preprocess_dataset, preset.exclude_images, preset.dedup_distance, preset.caption,
                                         limit or DEFAULT_PREVIEW_SAMPLES, output, Config.load()))
         assert train_dataset is not None
-        raise typer.Exit(train(train_dataset, preset.exclude_images, preset.dedup, preset.caption, preset.train,
+        raise typer.Exit(train(train_dataset, preset.exclude_images, preset.dedup_distance, preset.caption, preset.train,
                                preset.source, name, yes, Config.load()))
 
     first_tag = download_tag or search_tag
