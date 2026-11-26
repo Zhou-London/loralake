@@ -106,7 +106,10 @@ if conda env list | awk '{print $1}' | grep -qx "$ENV_NAME"; then
 else
   conda create -y -n "$ENV_NAME" -c conda-forge "python=${PYTHON_VERSION}"
 fi
+# cuda-nvcc 等包的 activate.d 脚本会引用未定义的变量（如 NVCC_PREPEND_FLAGS），和 set -u 冲突
+set +u
 conda activate "$ENV_NAME"
+set -u
 conda install -y -c conda-forge "cuda-nvcc=${CUDA_VERSION}" "cuda-version=${CUDA_VERSION}"
 
 step "安装 PyTorch（CUDA ${CUDA_VERSION}）"
