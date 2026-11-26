@@ -21,7 +21,7 @@ PROXY=
 #   WSL:        /mnt/c/Users/<用户名>/Documents/ComfyUI/models
 COMFY_MODELS_PATH=
 
-# 也可以直接指定模型文件，填了就不再自动查找
+# 也可以直接指定模型文件，填了就不再自动查找（./install_models.sh 下载模型后会自动填写）
 # ANIMA_DIT=
 # ANIMA_QWEN3=
 # ANIMA_VAE=

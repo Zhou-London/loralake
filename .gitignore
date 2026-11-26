@@ -5,3 +5,4 @@ output/
 *.egg-info/
 .env
 config
+models/

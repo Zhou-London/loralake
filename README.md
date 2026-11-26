@@ -18,7 +18,7 @@ llk -t hatsune_miku              # 训练，结果在 output/
 
 - Ubuntu 22.04 / 24.04（原生或 WSL2），`git` 和 `curl`（`sudo apt install -y git curl`）
 - NVIDIA 驱动 580 及以上（CUDA 13.0 的要求）。原生 Ubuntu 用 `sudo ubuntu-drivers install` 安装；WSL2 只需在 Windows 上装驱动，不要在 WSL 里装
-- Anima 底模、Qwen3 0.6B 文本编码器、Qwen-Image VAE 三个模型文件（通常已在 ComfyUI 的 `models/` 下）
+- Anima 底模、Qwen3 0.6B 文本编码器、Qwen-Image VAE 三个模型文件（通常已在 ComfyUI 的 `models/` 下；没有的话用下面的 `./install_models.sh` 下载）
 
 ```bash
 git clone --recurse-submodules https://github.com/Zhou-London/loralake.git ~/loralake
@@ -39,6 +39,17 @@ conda activate loralake
 llk --help
 ```
 
+### 下载模型：`install_models.sh`
+
+没有现成的 ComfyUI 模型时（比如新的服务器），用它从 Hugging Face 的 [circlestone-labs/Anima](https://huggingface.co/circlestone-labs/Anima) 下载三个模型（共约 5.6GB），并把 `config` 里的 `ANIMA_DIT` / `ANIMA_QWEN3` / `ANIMA_VAE` 改成下载到的路径：
+
+```bash
+./install_models.sh                  # 下载到仓库下的 models/
+./install_models.sh --dir ~/ComfyUI/models   # 或者下载到指定目录（同样按 ComfyUI 的子目录放）
+```
+
+不需要激活 conda 环境，也不需要 HF token；会使用 `config` 里的 `PROXY`。已下载的文件会跳过，中断后重新运行会续传。模型是 CircleStone Labs 非商业许可。
+
 WSL 下仓库要放在 Linux 文件系统里（如 `~/loralake`），不要放在 `/mnt/c` 下，否则缓存和训练的读写会很慢。
 
 ### Google Colab
@@ -53,7 +64,7 @@ WSL 下仓库要放在 Linux 文件系统里（如 `~/loralake`），不要放�
 
 ## 配置
 
-编辑仓库根目录的 `config`（`KEY=VALUE`，`#` 开头为注释；模板见 [config.example](config.example)）。至少要填 `COMFY_MODELS_PATH` 或三个 `ANIMA_*`，下载大数据集建议填 `HF_API_KEY`。
+编辑仓库根目录的 `config`（`KEY=VALUE`，`#` 开头为注释；模板见 [config.example](config.example)）。至少要填 `COMFY_MODELS_PATH` 或三个 `ANIMA_*`（`./install_models.sh` 会自动填 `ANIMA_*`），下载大数据集建议填 `HF_API_KEY`。
 
 | 配置项 | 说明 | 默认 |
 |---|---|---|
@@ -75,7 +86,7 @@ WSL 下仓库要放在 Linux 文件系统里（如 `~/loralake`），不要放�
 - 需要继续用的数据集复制 `datasets/<tag>/`，或者在旧机器上 `llk --upload`、新机器上 `llk --fetch` 经 Hugging Face 中转（见下文）；下载中断的数据集复制过去后重新运行 `llk -d` 可以续传
 - 自己改过的 `presets/*.yaml` 记得提交或一并复制
 - `derived/` 是训练视图和 latent 缓存，可以不复制，训练时会重新生成；`.cache/` 是 HF 镜像索引，会自动重新下载
-- 模型文件放到新机器的 ComfyUI `models/` 下，或者用 `ANIMA_*` 指定
+- 模型文件放到新机器的 ComfyUI `models/` 下，或者用 `ANIMA_*` 指定；也可以运行 `./install_models.sh` 从 Hugging Face 下载
 
 ### 打包数据集：`--pack` / `--unpack`
 
