@@ -26,11 +26,11 @@ cd ~/loralake
 ./install.sh
 ```
 
-`install.sh` 会依次：初始化 diffusion-pipe 子模块 → 没有 conda 时安装 [Miniforge](https://github.com/conda-forge/miniforge) 到 `~/miniforge3` → 创建 `loralake` 环境（Python 3.12、`cuda-nvcc` 13.0、PyTorch 2.9.0+cu130）→ 安装 diffusion-pipe 依赖和 `llk` → 从 `config.example` 生成 `config` → 检查 GPU 是否可用。脚本可重复运行，更新代码后再跑一次即可同步依赖。
+`install.sh` 会依次：初始化 diffusion-pipe 子模块 → 没有 conda 时安装 [Miniforge](https://github.com/conda-forge/miniforge) 到 `~/miniforge3` → 创建 `loralake` 环境（Python 3.12、`cuda-nvcc` 13.0、PyTorch 2.9.0+cu130、rclone）→ 安装 diffusion-pipe 依赖和 `llk` → 从 `config.example` 生成 `config` → 检查 GPU 是否可用。脚本可重复运行，更新代码后再跑一次即可同步依赖。
 
 - 依赖版本默认按 [env/constraints.txt](env/constraints.txt) 锁定（一套验证过能训练的组合）。想用 diffusion-pipe 依赖的最新版：`./install.sh --latest`。
 - 环境名可用 `LORALAKE_ENV=xxx ./install.sh` 修改。
-- 不想用 conda、已经有装好 CUDA 版 PyTorch 的 Python 时：`./install.sh --system`，直接装进当前 Python，沿用已有的 torch，不使用 `env/constraints.txt`。需要能找到 `nvcc`（deepspeed 导入时要用）。
+- 不想用 conda、已经有装好 CUDA 版 PyTorch 的 Python 时：`./install.sh --system`，直接装进当前 Python，沿用已有的 torch，不使用 `env/constraints.txt`，也不安装 rclone。需要能找到 `nvcc`（deepspeed 导入时要用）。
 
 之后每个新终端先激活环境再用：
 
@@ -111,7 +111,8 @@ llk --upload kincora                 # 数据集：打包后上传到 MyDrive/lo
 `--upload` 和从 Google Drive 下载都通过 [rclone](https://rclone.org/) 访问你的 Drive，每台机器配置一次：
 
 ```bash
-conda install -n loralake -c conda-forge rclone   # 或者把 https://rclone.org/downloads/ 的 rclone 放进 ~/bin，不需要 root
+# install.sh 已在 conda 环境里装好 rclone；--system 模式下自己装：conda install -c conda-forge rclone，
+# 或者把 https://rclone.org/downloads/ 的 rclone 放进 ~/bin（不需要 root）
 rclone config
 ```
 

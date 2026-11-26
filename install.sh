@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# loralake 一键安装：子模块、conda 环境（含 CUDA 13.0 版 PyTorch 和 diffusion-pipe 依赖）、config。
+# loralake 一键安装：子模块、conda 环境（含 CUDA 13.0 版 PyTorch、diffusion-pipe 依赖和 rclone）、config。
 # 可重复运行，已完成的步骤会跳过或增量更新。
 #
 #   ./install.sh               按 env/constraints.txt 锁定的版本安装（推荐）
@@ -20,6 +20,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONSTRAINTS="${ROOT}/env/constraints.txt"
 USE_CONSTRAINTS=1
 SYSTEM=0
+COLAB=0
 PYTHON="${PYTHON:-python3}"
 
 for arg in "$@"; do
@@ -38,6 +39,7 @@ die()  { printf '\033[31m错误: %s\033[0m\n' "$*" >&2; exit 1; }
 if "$PYTHON" -c "import google.colab" 2>/dev/null; then
   echo "检测到 Colab，使用 --system 模式"
   SYSTEM=1
+  COLAB=1
 fi
 
 step "检查系统"
@@ -107,7 +109,8 @@ else
   conda create -y -n "$ENV_NAME" -c conda-forge "python=${PYTHON_VERSION}"
 fi
 conda activate "$ENV_NAME"
-conda install -y -c conda-forge "cuda-nvcc=${CUDA_VERSION}" "cuda-version=${CUDA_VERSION}"
+# rclone 用于 llk --upload 和从 Google Drive 下载
+conda install -y -c conda-forge "cuda-nvcc=${CUDA_VERSION}" "cuda-version=${CUDA_VERSION}" rclone
 
 step "安装 PyTorch（CUDA ${CUDA_VERSION}）"
 python -m pip install --upgrade pip
@@ -147,6 +150,19 @@ except Exception as e:
           f"通常是找不到 nvcc，可设置 CUDA_HOME 或把 nvcc 加到 PATH\033[0m")
 EOF
 llk --help >/dev/null && echo "llk 可用"
+
+# Colab 上 Drive 已挂载，用不到 rclone
+if (( ! COLAB )); then
+  if ! command -v rclone >/dev/null; then
+    warn "找不到 rclone，llk --upload 和从 Google Drive 下载无法使用。安装方法见 README 的「rclone 安装和授权」"
+  else
+    remote="$(sed -n 's/^RCLONE_REMOTE=\([^:]*:\).*/\1/p' "${ROOT}/config" | tail -1)"
+    remote="${remote:-gdrive:}"
+    if ! rclone listremotes 2>/dev/null | grep -qxF "$remote"; then
+      echo "rclone 已安装但还没有添加 ${remote}。要用 llk --upload 或从 Drive 下载，先运行 rclone config（见 README 的「rclone 安装和授权」）"
+    fi
+  fi
+fi
 
 if (( SYSTEM )); then
   echo

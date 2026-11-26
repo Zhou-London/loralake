@@ -11,6 +11,7 @@ annotated-types==0.8.0
 antlr4-python3-runtime==4.9.3
 anyio==4.16.0
 attrs==26.1.0
+backports.zstd==1.8.1
 av==19.0.2
 bitsandbytes==0.50.2
 certifi==2026.10.23
