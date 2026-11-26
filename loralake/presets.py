@@ -16,6 +16,8 @@ DEFAULT_PRESET = "default"
 PRESET_SUFFIXES = (".yaml", ".yml")
 TAG_FIELDS = frozenset({"remove_tags", "meta_tags"})
 SECTIONS = ("preprocess", "train")
+# 已经不用、读到时忽略的键：训练状态改为和 LoRA 一起按 save_every_epochs 保存
+LEGACY_TRAIN_KEYS = frozenset({"checkpoint_every_minutes"})
 
 Options = TypeVar("Options", AnimaCaptionOptions, TrainSettings)
 
@@ -130,7 +132,8 @@ def load_preset(name_or_path: str | None) -> Preset:
             dedup=dedup,
             dedup_threshold=dedup_threshold,
             caption=apply_options(AnimaCaptionOptions(), preprocess, "preprocess"),
-            train=apply_options(TrainSettings(), _section(document, "train"), "train"),
+            train=apply_options(TrainSettings(), {key: value for key, value in _section(document, "train").items()
+                                                  if key not in LEGACY_TRAIN_KEYS}, "train"),
         )
     except PresetError as e:
         raise PresetError(f"预设 {path}: {e}") from e

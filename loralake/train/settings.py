@@ -19,7 +19,6 @@ class TrainSettings:
     batch_size: int = 4
     resolution: int = 1024
     save_every_epochs: int = 2
-    checkpoint_every_minutes: int = 30
     optimizer: str = "adamw_optimi"
     caption_dropout: float = 0.0
     gradient_checkpointing: bool = True
@@ -63,8 +62,8 @@ def training_config(models: AnimaModels, settings: TrainSettings, dataset_config
         "gradient_accumulation_steps": 1,
         "gradient_clipping": 1.0,
         "save_every_n_epochs": settings.save_every_epochs,
-        # 训练状态（优化器、数据进度）用于续训，只保留最新一份，见 diffpipe.prune_training_state
-        "checkpoint_every_n_minutes": settings.checkpoint_every_minutes,
+        # 训练状态（优化器、数据进度）和 LoRA 同时保存，用于续训和出现 NaN 时回退；只保留最新一份，见 diffpipe.prune_training_state
+        "checkpoint_every_n_epochs": settings.save_every_epochs,
         "activation_checkpointing": settings.gradient_checkpointing,
         "uncond_fraction": settings.caption_dropout,
         "save_dtype": "bfloat16",

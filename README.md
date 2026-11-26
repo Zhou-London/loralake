@@ -248,7 +248,17 @@ diffusion-pipe 按宽高比分桶，每个桶只保留 batch 大小整数倍的�
 llk --resume miku_v1
 ```
 
-训练中可以随时按 Ctrl+C 中断，已经保存的各 epoch LoRA 会移到 `output/<name>/`。训练状态（优化器、数据进度）每 30 分钟保存一次（预设键 `checkpoint_every_minutes`），只保留最新一份；中断后用 `--resume <name>` 从最近一次保存的状态继续，最多重练这 30 分钟内的步数。续训沿用 `run.json` 里的全部设置，不能再改 `--epochs`、`--lr` 等选项；数据集、筛选结果或底模和开始时不同则拒绝续训。训练成功结束后会删掉训练状态。
+训练中可以随时按 Ctrl+C 中断，已经保存的各 epoch LoRA 会移到 `output/<name>/`。训练状态（优化器、数据进度）和 LoRA 一起每 `save_every_epochs` 个 epoch 保存一次，只保留最新一份；中断后用 `--resume <name>` 从最近一次保存的状态继续，最多重练这几个 epoch。续训沿用 `run.json` 里的全部设置，不能再改 `--epochs`、`--lr` 等选项；数据集、筛选结果或底模和开始时不同则拒绝续训。训练成功结束后会删掉训练状态。
+
+### 出现 NaN 时
+
+偶尔某一步的计算会溢出，得到 NaN/inf 梯度；如果让它更新权重，LoRA 的全部权重都会变成 NaN，之后保存的 LoRA 画出来全黑。现在每一步在更新权重之前都会检查梯度，一旦出现 NaN/inf：
+
+1. 这一步不更新权重，训练立即停下，终端里列出出问题的步数、时间步 t、这一步用到的图片和出问题的层；
+2. 用同一个 batch（同样的噪声和 t）重放一遍前向和反向，记下最先出现非有限值的模块；
+3. 自动回退到最近一次保存的训练状态（没有的话从头开始），换一个随机种子继续，最多重试 3 次。
+
+诊断信息在 `output/<name>/checkpoints/nan_events/`：`.json` 是上面这些信息，`.pt` 是出问题那一步的输入和 LoRA 权重，可以拿来离线重放。`train.log` 里每一步多一行 `[loralake]`，记录 loss、梯度范数、LoRA 权重最大值、时间步和图片；开头一行是这次的随机种子，设置环境变量 `LORALAKE_SEED=<种子>` 再训练可以复现同样的随机数。
 
 优先级：命令行参数 > 预设（默认 `presets/default.yaml`）> 内置默认。预处理的选项（`-c`、`--trigger`、`--remove-tags`、`--exclude-images`、`--dedup`/`--no-dedup`）同样适用于训练。输出目录里还有 `run.json`（本次用到的全部设置）和 `train.log`。
 
@@ -274,8 +284,7 @@ train:
   epochs: 10
   batch_size: 4
   resolution: 1024
-  save_every_epochs: 2
-  checkpoint_every_minutes: 30 # 每隔多少分钟保存一次训练状态，用于 --resume
+  save_every_epochs: 2    # 每隔几个 epoch 保存 LoRA 和训练状态（用于 --resume 和 NaN 回退）
   optimizer: adamw_optimi # diffusion-pipe 的优化器名，也可用 AdamW8bit、AdamW8bitKahan、Prodigy 等
   caption_dropout: 0      # 以空 caption 训练的比例（diffusion-pipe 的 uncond_fraction）
   gradient_checkpointing: true

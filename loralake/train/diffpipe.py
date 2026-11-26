@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 import re
 import shutil
@@ -6,15 +7,19 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from rich.console import Console
-from rich.progress import (BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TaskID, TextColumn,
-                           TimeElapsedColumn, TimeRemainingColumn)
 
 from ..core.config import ROOT
+from . import guard
+from .buckets import BucketPlan
+from .progress import ANSI_ESCAPE, STEP_PROGRESS, TrainingProgress
 
 DIFFUSION_PIPE_DIR = ROOT / "third_party" / "diffusion-pipe"
 TRAIN_SCRIPT = "train.py"
+# DeepSpeed 启动的是 guard.py，它装好 NaN 检查和日志后再运行 train.py
+GUARD_SCRIPT = Path(guard.__file__).resolve()
 # 用 python -m 启动，不依赖 deepspeed 脚本装在哪个 bin 目录（conda 环境和 Colab 的系统 Python 不同）
 DEEPSPEED = [sys.executable, "-m", "deepspeed.launcher.runner"]
 ADAPTER_FILE = "adapter_model.safetensors"
@@ -22,12 +27,6 @@ EPOCH_DIR = re.compile(r"^epoch(\d+)$")
 STATE_DIR = re.compile(r"^global_step(\d+)$")
 LATEST_FILE = "latest"
 READ_CHUNK = 1 << 16
-STATUS_WIDTH = 60
-
-ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
-STEP_PROGRESS = re.compile(r"steps: (\d+) loss: ([0-9.]+(?:e-?\d+)?)")
-TQDM_PROGRESS = re.compile(r"(\d+)/(\d+) \[")
-LOG_PREFIX = re.compile(r"^\s*(?:\[[^]]*\]\s*)*(?:\[?(?:INFO|WARNING|ERROR|DEBUG)\]?\s*)?(?:\[[^]]*\]\s*)*")
 
 
 class DiffusionPipeError(Exception):
@@ -53,23 +52,6 @@ def commit() -> str:
 def _environment() -> dict[str, str]:
     return {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1",
             "NCCL_P2P_DISABLE": "1", "NCCL_IB_DISABLE": "1"}
-
-
-def _readable_status(line: str) -> str:
-    text = LOG_PREFIX.sub("", line).strip()
-    return "" if "%|" in text or "it/s]" in text else text[:STATUS_WIDTH]
-
-
-def _update_progress(progress: Progress, task: TaskID, line: str) -> None:
-    if match := STEP_PROGRESS.search(line):
-        progress.update(task, description="训练", completed=int(match[1]), loss=f"loss {match[2]}", status="")
-    elif match := TQDM_PROGRESS.search(line):
-        # 缓存 latent / 文本编码时 diffusion-pipe 只输出 tqdm 进度条，接在最近一条状态后面显示
-        context = progress.tasks[task].fields["context"]
-        progress.update(task, status=f"{context} {match[1]}/{match[2]}"[-STATUS_WIDTH:])
-    elif status := _readable_status(line):
-        context = status if status.lower().startswith("caching") else progress.tasks[task].fields["context"]
-        progress.update(task, status=status, context=context)
 
 
 @dataclass(frozen=True)
@@ -105,25 +87,28 @@ def prune_training_state(checkpoint_dir: Path) -> None:
                 shutil.rmtree(state, ignore_errors=True)
 
 
-def run_training(config_file: Path, log_file: Path, total_steps: int, console: Console,
-                 checkpoint_dir: Path, resume: TrainingState | None = None) -> int:
-    command = [*DEEPSPEED, "--num_gpus=1", TRAIN_SCRIPT, "--deepspeed", "--config", str(config_file)]
+def nan_event_files(checkpoint_dir: Path) -> set[Path]:
+    return set((checkpoint_dir / guard.EVENTS_DIR).glob("*.json"))
+
+
+def nan_events(checkpoint_dir: Path, known: set[Path]) -> list[dict[str, Any]]:
+    """guard.py 写下的、不在 known 里的 NaN 记录（文件名按步数和时间排序）；每条带上自己的路径 _file。"""
+    events = []
+    for path in sorted(nan_event_files(checkpoint_dir) - known):
+        try:
+            events.append({**json.loads(path.read_text(encoding="utf-8")), "_file": path})
+        except (OSError, ValueError):
+            events.append({"_file": path})
+    return events
+
+
+def run_training(config_file: Path, log_file: Path, buckets: BucketPlan, epochs: int, console: Console,
+                 checkpoint_dir: Path, resume: TrainingState | None = None, append_log: bool = False) -> int:
+    command = [*DEEPSPEED, "--num_gpus=1", str(GUARD_SCRIPT), "--deepspeed", "--config", str(config_file)]
     if resume is not None:
         command += ["--resume_from_checkpoint", resume.run]
-    progress = Progress(
-        SpinnerColumn(),
-        TextColumn("[bold]{task.description}"),
-        BarColumn(),
-        MofNCompleteColumn(),
-        TextColumn("{task.fields[loss]}"),
-        TimeElapsedColumn(),
-        TimeRemainingColumn(),
-        TextColumn("[dim]{task.fields[status]}"),
-        console=console,
-    )
-    with log_file.open("ab" if resume else "wb") as log, progress:
-        task = progress.add_task("准备中", total=total_steps, completed=resume.step if resume else 0,
-                                 loss="", status="", context="")
+    display = TrainingProgress(console, buckets, epochs, resume.step if resume else 0)
+    with log_file.open("ab" if resume or append_log else "wb") as log, display:
         process = subprocess.Popen(command, cwd=DIFFUSION_PIPE_DIR, stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT, env=_environment())
         assert process.stdout is not None
@@ -134,13 +119,12 @@ def run_training(config_file: Path, log_file: Path, total_steps: int, console: C
                 log.flush()
                 *lines, pending = re.split(rb"[\r\n]", pending + chunk)
                 for line in lines:
-                    text = ANSI_ESCAPE.sub("", line.decode("utf-8", "replace"))
-                    _update_progress(progress, task, text)
+                    text = line.decode("utf-8", "replace")
+                    display.feed(text)
                     if STEP_PROGRESS.search(text):
                         prune_training_state(checkpoint_dir)
             exit_code = process.wait()
-            if exit_code == 0:
-                progress.update(task, total=progress.tasks[0].completed)
+            display.finish(exit_code == 0)
             return exit_code
         except KeyboardInterrupt:
             process.terminate()

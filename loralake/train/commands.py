@@ -15,8 +15,8 @@ from ..preprocess.commands import load_selection
 from ..preprocess.dedup import LEGACY_THRESHOLD
 from ..preprocess.selection import Selection
 from ..preprocess.views import materialize_view
-from ..presets import PresetError, apply_options
-from . import diffpipe
+from ..presets import LEGACY_TRAIN_KEYS, PresetError, apply_options
+from . import diffpipe, guard
 from .buckets import BucketPlan, image_aspect_ratio, plan_buckets
 from .models import AnimaModels, ModelNotFoundError, locate_anima_models
 from .settings import TrainSettings, dataset_config, to_toml, training_config
@@ -26,6 +26,8 @@ TRAIN_CONFIG_FILE = "train.toml"
 MANIFEST_FILE = "run.json"
 LOG_FILE = "train.log"
 CHECKPOINT_DIR = "checkpoints"
+# 出现 NaN 时回退到上一个训练状态重试的次数
+MAX_NAN_RETRIES = 3
 
 
 def default_run_name(dataset_dir: Path) -> str:
@@ -73,8 +75,7 @@ def print_plan(images: int, trigger: str, settings: TrainSettings, buckets: Buck
                           f"平均裁切 {buckets.mean_crop:.1%}")
     table.add_row("LoRA", f"rank {settings.rank}，学习率 {settings.learning_rate:g}，{settings.optimizer}")
     table.add_row("分辨率", f"{settings.resolution}" + ("，梯度检查点" if settings.gradient_checkpointing else ""))
-    table.add_row("保存", f"每 {settings.save_every_epochs} 个 epoch 保存 LoRA，"
-                          f"每 {settings.checkpoint_every_minutes} 分钟保存训练状态（用于续训）")
+    table.add_row("保存", f"每 {settings.save_every_epochs} 个 epoch 保存 LoRA 和训练状态（用于续训和 NaN 回退）")
     table.add_row("底模", models.dit.name)
     table.add_row("输出", str(run_dir))
     console.print(table)
@@ -119,9 +120,32 @@ def _print_lora(run_dir: Path) -> None:
 def _print_resume_hint(run_dir: Path, settings: TrainSettings) -> None:
     state = diffpipe.latest_training_state(run_dir / CHECKPOINT_DIR)
     if state is None:
-        console.print(f"[dim]还没有保存训练状态（每 {settings.checkpoint_every_minutes} 分钟保存一次），无法续训")
+        console.print(f"[dim]还没有保存训练状态（每 {settings.save_every_epochs} 个 epoch 保存一次），无法续训")
     else:
         console.print(f"已保存第 {state.step:,} 步的训练状态，继续训练: [bold]llk --resume {run_dir.name}")
+
+
+def _print_nan_event(event: dict[str, Any]) -> None:
+    step = event.get("step", "?")
+    console.print(f"[yellow]第 {step} 步出现 NaN/inf 梯度，已在更新权重之前停下（权重没有被破坏）")
+    if t := event.get("t"):
+        console.print(f"  时间步 t: {min(t):.3f}～{max(t):.3f}，loss {event.get('loss')}")
+    if images := event.get("images"):
+        console.print(Text(f"  图片: {', '.join(images)}"))
+    if "nonfinite_grad_params" in event:
+        layers = event.get("nonfinite_grad_layers") or []
+        where = f"，流水线第 {layers[0]}～{layers[-1]} 层" if layers else ""
+        console.print(f"  非有限梯度: {event['nonfinite_grad_params']}/{event.get('trainable_params', '?')} 个 LoRA 参数{where}")
+    replay = event.get("replay") or {}
+    if "error" in replay:
+        console.print(f"  [dim]重放失败: {replay['error']}")
+    elif replay:
+        verdict = "复现了" if replay.get("reproduced") else "没有复现（可能是不确定的计算）"
+        console.print(f"  用同一 batch 重放: {verdict}；最先出现非有限值的前向输出: "
+                      f"{replay.get('first_nonfinite_forward') or '无'}")
+        if backward := replay.get("nonfinite_backward_order"):
+            console.print(Text(f"  反向传播中最先出现非有限梯度的模块: {', '.join(backward[:3])}"))
+    console.print(f"[dim]  详细信息: {event['_file']}")
 
 
 def _run(run_dir: Path, train_config_file: Path, settings: TrainSettings, buckets: BucketPlan,
@@ -129,8 +153,23 @@ def _run(run_dir: Path, train_config_file: Path, settings: TrainSettings, bucket
     checkpoint_dir = run_dir / CHECKPOINT_DIR
     log_file = run_dir / LOG_FILE
     try:
-        exit_code = diffpipe.run_training(train_config_file, log_file, buckets.steps_per_epoch * settings.epochs,
-                                          console, checkpoint_dir, resume_from)
+        for attempt in range(MAX_NAN_RETRIES + 1):
+            known_events = diffpipe.nan_event_files(checkpoint_dir)
+            exit_code = diffpipe.run_training(train_config_file, log_file, buckets, settings.epochs, console,
+                                              checkpoint_dir, resume_from, append_log=attempt > 0)
+            if not (events := diffpipe.nan_events(checkpoint_dir, known_events)):
+                break
+            _print_nan_event(events[-1])
+            if attempt == MAX_NAN_RETRIES:
+                diffpipe.collect_adapters(checkpoint_dir, run_dir, settings.epochs, required=False)
+                console.print(f"[red]重试 {MAX_NAN_RETRIES} 次后仍然出现 NaN，停止训练。诊断信息在 "
+                              f"{checkpoint_dir / guard.EVENTS_DIR}")
+                _print_lora(run_dir)
+                _print_resume_hint(run_dir, settings)
+                return 1
+            resume_from = diffpipe.latest_training_state(checkpoint_dir)
+            where = f"第 {resume_from.step:,} 步的训练状态" if resume_from else "开头（还没有保存训练状态）"
+            console.print(f"[yellow]回退到{where}，换一个随机种子重试（{attempt + 1}/{MAX_NAN_RETRIES}）")
     except KeyboardInterrupt:
         diffpipe.collect_adapters(checkpoint_dir, run_dir, settings.epochs, required=False)
         console.print(f"\n[yellow]训练已中断，已保存的 LoRA 在 {run_dir}")
@@ -197,6 +236,11 @@ def _json_equal(value: object, stored: object) -> bool:
     return json.loads(json.dumps(value, default=_json_default)) == stored
 
 
+def _current_settings(values: dict[str, Any]) -> dict[str, Any]:
+    """去掉旧版 run.json 里已经不用的设置。"""
+    return {key: value for key, value in values.items() if key not in LEGACY_TRAIN_KEYS}
+
+
 def _recorded_dedup(value: object) -> int | None:
     """run.json 里的 dedup：阈值，null/false 表示没去重；旧版本记录的 true 对应当时固定的阈值。"""
     if value is True:
@@ -230,7 +274,7 @@ def resume(run: str, yes: bool, config: Config) -> int:
 
     try:
         manifest = json.loads((run_dir / MANIFEST_FILE).read_text(encoding="utf-8"))
-        settings = apply_options(TrainSettings(), manifest["settings"], "settings")
+        settings = apply_options(TrainSettings(), _current_settings(manifest["settings"]), "settings")
         caption_options = apply_options(AnimaCaptionOptions(), manifest["caption"], "caption")
         exclude_images = frozenset(manifest["exclude_images"])
         dedup = _recorded_dedup(manifest.get("dedup"))
