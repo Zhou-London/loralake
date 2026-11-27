@@ -31,9 +31,28 @@ for arg in "$@"; do
   esac
 done
 
-step() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
+CURRENT_STEP="开始"
+step() { CURRENT_STEP="$*"; printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 warn() { printf '\033[33m警告: %s\033[0m\n' "$*" >&2; }
 die()  { printf '\033[31m错误: %s\033[0m\n' "$*" >&2; exit 1; }
+
+# set -e 中途退出时，大量输出里不容易看到报错，结束时再明确说一次在哪一步失败
+on_exit() {
+  local status=$?
+  if (( status != 0 )); then
+    printf '\n\033[1;31m安装没有完成：「%s」这一步出错（exit %s），报错见上方。\033[0m\n' "$CURRENT_STEP" "$status" >&2
+    printf '\033[31m处理好后重新运行 ./install.sh 即可，已完成的步骤会跳过。\033[0m\n' >&2
+  fi
+}
+trap on_exit EXIT
+
+# conda 的 shell 函数在 activate、install 之后会运行环境里的 activate.d 脚本（如 cuda-nvcc 的），
+# 这些脚本引用未定义的变量（NVCC_PREPEND_FLAGS 等），在 set -u 下会让整个脚本退出
+conda_run() {
+  set +u
+  conda "$@"
+  set -u
+}
 
 if "$PYTHON" -c "import google.colab" 2>/dev/null; then
   echo "检测到 Colab，使用 --system 模式"
@@ -107,17 +126,14 @@ if conda env list | awk '{print $1}' | grep -qx "$ENV_NAME"; then
 else
   conda create -y -n "$ENV_NAME" -c conda-forge "python=${PYTHON_VERSION}"
 fi
-# cuda-nvcc 等包的 activate.d 脚本会引用未定义的变量（如 NVCC_PREPEND_FLAGS），和 set -u 冲突
-set +u
-conda activate "$ENV_NAME"
-set -u
-conda install -y -c conda-forge "cuda-nvcc=${CUDA_VERSION}" "cuda-version=${CUDA_VERSION}"
+conda_run activate "$ENV_NAME"
+conda_run install -y -c conda-forge "cuda-nvcc=${CUDA_VERSION}" "cuda-version=${CUDA_VERSION}"
 
 if command -v nvim >/dev/null; then
   echo "已有 neovim: $(command -v nvim)"
 else
   step "安装 neovim 到 ${ENV_NAME} 环境"
-  conda install -y -c conda-forge nvim
+  conda_run install -y -c conda-forge nvim
 fi
 
 step "安装 PyTorch（CUDA ${CUDA_VERSION}）"
@@ -157,7 +173,9 @@ except Exception as e:
     print(f"\033[33m警告: deepspeed 无法导入（{type(e).__name__}: {e}），训练将无法运行。"
           f"通常是找不到 nvcc，可设置 CUDA_HOME 或把 nvcc 加到 PATH\033[0m")
 EOF
-llk --help >/dev/null && echo "llk 可用"
+command -v llk >/dev/null || die "安装结束了但找不到 llk 命令（当前 Python: $(command -v "$PYTHON")），请把上面的输出发给维护者"
+llk --help >/dev/null
+echo "llk 可用: $(command -v llk)"
 
 if (( SYSTEM )); then
   echo
