@@ -26,3 +26,4 @@ train:
   optimizer: adamw_optimi
   caption_dropout: 0
   gradient_checkpointing: true
+  auto_upload: false

@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,7 @@ from rich.console import Console
 from ..core.config import ROOT
 from . import guard
 from .buckets import BucketPlan
-from .progress import ANSI_ESCAPE, STEP_PROGRESS, TrainingProgress
+from .progress import ANSI_ESCAPE, SAVING_MODEL, SAVING_STATE, STEP_PROGRESS, TrainingProgress
 
 DIFFUSION_PIPE_DIR = ROOT / "third_party" / "diffusion-pipe"
 TRAIN_SCRIPT = "train.py"
@@ -27,6 +28,9 @@ EPOCH_DIR = re.compile(r"^epoch(\d+)$")
 STATE_DIR = re.compile(r"^global_step(\d+)$")
 LATEST_FILE = "latest"
 READ_CHUNK = 1 << 16
+# diffusion-pipe 在一个 epoch 结束时先保存训练状态和 LoRA，都保存完了才打印这一行
+SavedCallback = Callable[[str], None]
+NEW_EPOCH = re.compile(r"Started new epoch: (\d+)")
 
 
 class DiffusionPipeError(Exception):
@@ -103,7 +107,10 @@ def nan_events(checkpoint_dir: Path, known: set[Path]) -> list[dict[str, Any]]:
 
 
 def run_training(config_file: Path, log_file: Path, buckets: BucketPlan, epochs: int, console: Console,
-                 checkpoint_dir: Path, resume: TrainingState | None = None, append_log: bool = False) -> int:
+                 checkpoint_dir: Path, resume: TrainingState | None = None, append_log: bool = False,
+                 on_saved: SavedCallback | None = None) -> int:
+    """on_saved：每次保存完 LoRA 和训练状态、开始下一个 epoch 时调用，参数是保存内容的说明（如「第 4 个 epoch」）。
+    训练结束时的最后一次保存不会调用，由调用方在训练进程退出后处理。"""
     command = [*DEEPSPEED, "--num_gpus=1", str(GUARD_SCRIPT), "--deepspeed", "--config", str(config_file)]
     if resume is not None:
         command += ["--resume_from_checkpoint", resume.run]
@@ -113,6 +120,7 @@ def run_training(config_file: Path, log_file: Path, buckets: BucketPlan, epochs:
                                    stderr=subprocess.STDOUT, env=_environment())
         assert process.stdout is not None
         pending = b""
+        saved: str | None = None  # 这个 epoch 结束时保存了什么，还没通知 on_saved
         try:
             while chunk := os.read(process.stdout.fileno(), READ_CHUNK):
                 log.write(chunk)
@@ -123,6 +131,16 @@ def run_training(config_file: Path, log_file: Path, buckets: BucketPlan, epochs:
                     display.feed(text)
                     if STEP_PROGRESS.search(text):
                         prune_training_state(checkpoint_dir)
+                    elif match := SAVING_MODEL.search(text):
+                        epoch = EPOCH_DIR.match(match[1])
+                        saved = f"第 {epoch[1]} 个 epoch" if epoch else match[1]
+                    elif SAVING_STATE.search(text):
+                        saved = saved or "训练状态"
+                    elif saved and NEW_EPOCH.search(text):
+                        prune_training_state(checkpoint_dir)
+                        if on_saved is not None:
+                            on_saved(saved)
+                        saved = None
             exit_code = process.wait()
             display.finish(exit_code == 0)
             return exit_code

@@ -73,7 +73,8 @@ def main(
     review_dataset: Annotated[Optional[str], typer.Option("--review", metavar="DATASET")] = None,
     pack_dataset: Annotated[Optional[str], typer.Option("--pack", metavar="DATASET")] = None,
     unpack_archive: Annotated[Optional[str], typer.Option("--unpack", metavar="ARCHIVE")] = None,
-    upload_name: Annotated[Optional[str], typer.Option("--upload", metavar="RUN|DATASET")] = None,
+    # 要上传的名字跟在后面（放在 extra_tags 里），不写名字时上传 output/ 下的全部训练输出
+    upload_flag: Annotated[bool, typer.Option("--upload")] = False,
     fetch_name: Annotated[Optional[str], typer.Option("--fetch", metavar="RUN|DATASET")] = None,
     extra_tags: Annotated[Optional[list[str]], typer.Argument(hidden=True, metavar="TAG")] = None,
     preset_name: Annotated[Optional[str], typer.Option("--config", "-c", metavar="PRESET")] = None,
@@ -97,12 +98,13 @@ def main(
     resolution: Annotated[Optional[int], typer.Option(min=256)] = None,
     save_every: Annotated[Optional[int], typer.Option(min=1, metavar="EPOCHS")] = None,
     gradient_checkpointing: Annotated[Optional[bool], typer.Option("--gradient-checkpointing/--no-gradient-checkpointing")] = None,
+    auto_upload: Annotated[Optional[bool], typer.Option("--auto-upload/--no-auto-upload")] = None,
 ) -> None:
     actions = [flag for flag, value in (
         ("--download", download_tag), ("--search", search_tag),
         ("--preprocess", preprocess_dataset), ("--train", train_dataset), ("--resume", resume_run),
         ("--review", review_dataset), ("--pack", pack_dataset), ("--unpack", unpack_archive),
-        ("--upload", upload_name), ("--fetch", fetch_name)) if value]
+        ("--upload", upload_flag), ("--fetch", fetch_name)) if value]
     if len(actions) > 1:
         raise click.UsageError(f"{' 和 '.join(actions)} 不能同时使用")
 
@@ -110,7 +112,7 @@ def main(
         if fixed := [f"--{param.name.replace('_', '-')}" for param in ctx.command.params
                      if param.name in RESUME_FIXED and ctx.params.get(param.name) is not None]:
             raise click.UsageError(f"--resume 沿用开始训练时的设置，不能再指定 {', '.join(fixed)}")
-        raise typer.Exit(resume(resume_run, yes, Config.load()))
+        raise typer.Exit(resume(resume_run, yes, Config.load(), auto_upload))
 
     if review_dataset:
         preset = resolve_preset(preset_name, None, None, None, None, {})
@@ -124,8 +126,8 @@ def main(
     if unpack_archive:
         raise typer.Exit(unpack(unpack_archive, yes, Config.load()))
 
-    if upload_name:
-        raise typer.Exit(upload(upload_name, yes, Config.load()))
+    if upload_flag:
+        raise typer.Exit(upload(extra_tags or [], yes, Config.load()))
 
     if fetch_name:
         raise typer.Exit(fetch(fetch_name, yes, Config.load()))
@@ -133,7 +135,7 @@ def main(
     if preprocess_dataset or train_dataset:
         train_overrides = given(rank=rank, learning_rate=learning_rate, epochs=epochs, batch_size=batch_size,
                                 resolution=resolution, save_every_epochs=save_every,
-                                gradient_checkpointing=gradient_checkpointing)
+                                gradient_checkpointing=gradient_checkpointing, auto_upload=auto_upload)
         preset = resolve_preset(preset_name, trigger, remove_tags, exclude_images, dedup, train_overrides)
         if preset.source:
             console.print(f"[dim]预设: {preset.source}")

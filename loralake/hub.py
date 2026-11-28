@@ -3,18 +3,22 @@
 用 config 里的 HF_API_KEY，不需要浏览器登录（上传需要 write 权限）。仓库默认是 <用户名>/loralake
 （私有 dataset 仓库，上传时不存在会自动创建），可用 HF_REPO 指定。仓库里的布局：
 
-- output/<名字>/            训练输出整个目录（中断的训练带着训练状态，可以在别处续训）
+- output/<名字>/            训练输出整个目录（中断的训练带着训练状态，可以在别处续训）。上传时让仓库里的
+                            这个目录和本地一致：本地已经删掉的文件（旧的训练状态等）在仓库里也删掉
 - datasets/<名字>.tar.zst   数据集，上传前先 --pack，取回后自动 --unpack
 """
 
 import os
 import shutil
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from huggingface_hub import HfApi, RepoFile, RepoFolder
 from huggingface_hub.errors import EntryNotFoundError, HfHubHTTPError, RepositoryNotFoundError
+from huggingface_hub.utils import disable_progress_bars, logging as hub_logging
+from rich.table import Table
 
 from .archive import ARCHIVE_SUFFIX, pack, unpack
 from .core.config import Config
@@ -29,6 +33,10 @@ DATASETS_DIR = "datasets"
 TOKEN_URL = "https://huggingface.co/settings/tokens"
 # 下载到一半的文件放在这里，重新运行同一命令时 huggingface_hub 会从断点继续
 STAGING = ".hf-fetch"
+# 训练中自动上传时，先把训练输出的快照放在这里再上传，见 AutoUploader
+UPLOAD_STAGING = ".hf-upload"
+# 快照里小于这个大小的文件复制（train.log 等还在追加），更大的用硬链接（LoRA、训练状态写完就不再改）
+SNAPSHOT_COPY_LIMIT = 64 << 20
 
 
 class HubError(Exception):
@@ -79,15 +87,57 @@ def _run_hub(action: Callable[[], int]) -> int:
 
 # ---- 上传 ----
 
+def _folder_size(folder: Path) -> int:
+    return sum(path.stat().st_size for path in folder.rglob("*") if path.is_file())
+
+
+def _push_run(api: HfApi, repo_id: str, folder: Path, name: str, message: str) -> str:
+    """把 folder 上传成仓库里的 output/<name>/，仓库里这个目录下本地没有的文件删掉；没有变化的文件不重复传。"""
+    dest = f"{RUNS_DIR}/{name}"
+    api.upload_folder(repo_id=repo_id, repo_type=REPO_TYPE, folder_path=folder, path_in_repo=dest,
+                      delete_patterns="*", commit_message=message)
+    return _repo_url(repo_id, dest)
+
+
 def _upload_run(api: HfApi, repo_id: str, run_dir: Path, yes: bool) -> int:
     dest = f"{RUNS_DIR}/{run_dir.name}"
-    size = sum(path.stat().st_size for path in run_dir.rglob("*") if path.is_file())
-    if not yes and not confirm(f"上传训练输出 {run_dir}（{human_size(size)}）到 {repo_id} 的 {dest}/？"):
+    if not yes and not confirm(f"上传训练输出 {run_dir}（{human_size(_folder_size(run_dir))}）到 {repo_id} 的 {dest}/？"):
         return 1
     api.create_repo(repo_id, repo_type=REPO_TYPE, private=True, exist_ok=True)
-    api.upload_folder(repo_id=repo_id, repo_type=REPO_TYPE, folder_path=run_dir, path_in_repo=dest,
-                      commit_message=f"Upload {dest}")
-    console.print(f"[green]已上传 → {_repo_url(repo_id, dest)}")
+    url = _push_run(api, repo_id, run_dir, run_dir.name, f"Upload {dest}")
+    console.print(f"[green]已上传 → {url}")
+    return 0
+
+
+def _local_runs(config: Config) -> list[Path]:
+    """output/ 下的训练输出（跳过 .hf-fetch 等隐藏目录）。"""
+    if not config.output_dir.is_dir():
+        return []
+    return sorted(path for path in config.output_dir.iterdir() if path.is_dir() and not path.name.startswith("."))
+
+
+def _upload_all_runs(api: HfApi, repo_id: str, runs: list[Path], yes: bool) -> int:
+    sizes = {run: _folder_size(run) for run in runs}
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    for run in runs:
+        table.add_row(run.name, human_size(sizes[run]))
+    console.print(table)
+    if not yes and not confirm(f"上传这 {len(runs)} 个训练输出（共 {human_size(sum(sizes.values()))}）到 "
+                               f"{repo_id} 的 {RUNS_DIR}/？没有变化的文件不会重复上传"):
+        return 1
+    api.create_repo(repo_id, repo_type=REPO_TYPE, private=True, exist_ok=True)
+    failed = []
+    for i, run in enumerate(runs, 1):
+        console.print(f"[bold]({i}/{len(runs)}) {run.name}")
+        try:
+            _push_run(api, repo_id, run, run.name, f"Upload {RUNS_DIR}/{run.name}")
+        except (HfHubHTTPError, OSError) as e:
+            console.print(f"[red]上传失败：{e}")
+            failed.append(run.name)
+    if failed:
+        console.print(f"[red]{len(failed)} 个上传失败：{', '.join(failed)}。重新运行同一命令即可")
+        return 1
+    console.print(f"[green]已上传 → {_repo_url(repo_id, RUNS_DIR)}")
     return 0
 
 
@@ -105,7 +155,20 @@ def _upload_dataset(api: HfApi, repo_id: str, dataset_dir: Path, yes: bool, conf
     return 0
 
 
-def upload(name: str, yes: bool, config: Config) -> int:
+def upload(names: list[str], yes: bool, config: Config) -> int:
+    """依次上传 names 里的训练输出或数据集；names 为空时上传 output/ 下的全部训练输出。"""
+    if not names:
+        if not (runs := _local_runs(config)):
+            console.print(f"[yellow]{config.output_dir} 下没有训练输出")
+            return 1
+        return _run_hub(lambda: _upload_all_runs(*_connect(config, write=True), runs, yes))
+    exit_code = 0
+    for name in names:
+        exit_code = _upload_one(name, yes, config) or exit_code
+    return exit_code
+
+
+def _upload_one(name: str, yes: bool, config: Config) -> int:
     run_dir = config.output_dir / name
     is_run = name not in (".", "..") and "/" not in name and run_dir.is_dir()
     dataset_dir = None if is_run else resolve_dataset(name, config.dataset_dir)
@@ -120,6 +183,108 @@ def upload(name: str, yes: bool, config: Config) -> int:
         return _upload_dataset(api, repo_id, dataset_dir, yes, config)
 
     return _run_hub(action)
+
+
+# ---- 训练中自动上传 ----
+
+def _snapshot(source: Path, target: Path) -> None:
+    """把 source 的当前内容做成 target 下的快照。上传的同时训练还在写 source（追加日志、删旧的训练状态），
+    直接上传 source 可能读到写了一半或者已经删掉的文件。"""
+    shutil.rmtree(target, ignore_errors=True)
+    for directory, _, files in os.walk(source):
+        relative = Path(directory).relative_to(source)
+        (target / relative).mkdir(parents=True, exist_ok=True)
+        for file in files:
+            src, dst = Path(directory) / file, target / relative / file
+            try:
+                if src.stat().st_size >= SNAPSHOT_COPY_LIMIT:
+                    try:
+                        os.link(src, dst)
+                        continue
+                    except OSError:
+                        pass
+                shutil.copy2(src, dst)
+            except FileNotFoundError:  # 刚被删掉的旧训练状态
+                pass
+
+
+class AutoUploader:
+    """训练时每保存一次（LoRA 和训练状态），就在后台把训练输出目录同步到仓库的 output/<名字>/，不耽误训练。
+
+    同一时间只传一份；上一次还没传完又保存了，就等它传完再传最新的。上传失败只提示，下次保存时会重新同步。
+    """
+
+    def __init__(self, config: Config, run_dir: Path) -> None:
+        self.api, self.repo_id = _connect(config, write=True)
+        self.api.create_repo(self.repo_id, repo_type=REPO_TYPE, private=True, exist_ok=True)
+        self.run_dir = run_dir
+        self.staging = config.output_dir / UPLOAD_STAGING / run_dir.name
+        self._lock = threading.Lock()
+        self._pending: str | None = None
+        self._thread: threading.Thread | None = None
+        # huggingface_hub 自己的进度条和日志会打乱训练进度的显示
+        disable_progress_bars()
+        hub_logging.set_verbosity_error()
+
+    @classmethod
+    def connect(cls, config: Config, run_dir: Path) -> "AutoUploader | None":
+        """连接失败时打印原因并返回 None。"""
+        try:
+            return cls(config, run_dir)
+        except HubError as e:
+            console.print(f"[red]{e}")
+        except HfHubHTTPError as e:
+            console.print(f"[red]Hugging Face 返回错误：{e}")
+        except OSError as e:
+            console.print(f"[red]无法连接 Hugging Face：{e}")
+        console.print("[dim]不需要自动上传时用 --no-auto-upload")
+        return None
+
+    @property
+    def url(self) -> str:
+        return _repo_url(self.repo_id, f"{RUNS_DIR}/{self.run_dir.name}")
+
+    def request(self, label: str) -> None:
+        """在后台上传，label 是这次保存的说明（如「epoch 4」）。"""
+        with self._lock:
+            self._pending = label
+            if self._thread is None:
+                self._thread = threading.Thread(target=self._work, name="auto-upload", daemon=True)
+                self._thread.start()
+
+    def finish(self, label: str) -> bool:
+        """训练结束后调用：等后台的上传结束，再把最终结果同步上去。"""
+        with self._lock:
+            self._pending = None
+            thread = self._thread
+        if thread is not None:
+            console.print("[dim]等待正在进行的自动上传 ...")
+            thread.join()
+        with console.status(f"正在上传{label} ..."):
+            return self._push(label, final=True)
+
+    def _work(self) -> None:
+        while True:
+            with self._lock:
+                label, self._pending = self._pending, None
+                if label is None:
+                    self._thread = None
+                    return
+            self._push(label)
+
+    def _push(self, label: str, final: bool = False) -> bool:
+        try:
+            _snapshot(self.run_dir, self.staging)
+            _push_run(self.api, self.repo_id, self.staging, self.run_dir.name,
+                      f"Upload {RUNS_DIR}/{self.run_dir.name} ({label})")
+            console.print(f"[dim]已上传{label} → {self.url}")
+            return True
+        except Exception as e:  # 后台线程里出错不能打断训练
+            retry = "" if final else "下次保存后会再试，"
+            console.print(f"[yellow]自动上传（{label}）失败：{e}。{retry}也可以运行 llk --upload {self.run_dir.name}")
+            return False
+        finally:
+            shutil.rmtree(self.staging, ignore_errors=True)
 
 
 # ---- 取回 ----

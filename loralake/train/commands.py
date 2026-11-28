@@ -1,5 +1,5 @@
 import json
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -10,6 +10,7 @@ from rich.text import Text
 from ..core.config import Config
 from ..core.console import confirm, console
 from ..core.dataset import METADATA_FILE, dataset_name, resolve_dataset
+from ..hub import AutoUploader
 from ..preprocess.anima import AnimaCaptionOptions, anima_caption
 from ..preprocess.commands import load_selection
 from ..preprocess.dedup import LEGACY_THRESHOLD
@@ -63,7 +64,7 @@ def write_manifest(run_dir: Path, dataset_dir: Path, images: int, exclude_images
 
 
 def print_plan(images: int, trigger: str, settings: TrainSettings, buckets: BucketPlan, models: AnimaModels,
-               run_dir: Path) -> None:
+               run_dir: Path, uploader: AutoUploader | None = None) -> None:
     table = Table(show_header=False, box=None, padding=(0, 2))
     table.add_column(no_wrap=True)
     table.add_column(overflow="fold")
@@ -78,6 +79,8 @@ def print_plan(images: int, trigger: str, settings: TrainSettings, buckets: Buck
     table.add_row("保存", f"每 {settings.save_every_epochs} 个 epoch 保存 LoRA 和训练状态（用于续训和 NaN 回退）")
     table.add_row("底模", models.dit.name)
     table.add_row("输出", str(run_dir))
+    if uploader is not None:
+        table.add_row("自动上传", f"每次保存后上传到 {uploader.url}")
     console.print(table)
 
 
@@ -148,15 +151,41 @@ def _print_nan_event(event: dict[str, Any]) -> None:
     console.print(f"[dim]  详细信息: {event['_file']}")
 
 
+def _connect_uploader(settings: TrainSettings, config: Config, run_dir: Path) -> tuple[bool, AutoUploader | None]:
+    """开启 auto_upload 时先连上 Hugging Face，连不上就不开始训练。返回 (能否继续, uploader)。"""
+    if not settings.auto_upload:
+        return True, None
+    uploader = AutoUploader.connect(config, run_dir)
+    return uploader is not None, uploader
+
+
 def _run(run_dir: Path, train_config_file: Path, settings: TrainSettings, buckets: BucketPlan,
-         resume_from: diffpipe.TrainingState | None) -> int:
+         resume_from: diffpipe.TrainingState | None, uploader: AutoUploader | None) -> int:
+    exit_code = _train(run_dir, train_config_file, settings, buckets, resume_from,
+                       uploader.request if uploader else None)
+    if uploader is None:
+        return exit_code
+    if exit_code == 130:
+        console.print(f"[dim]中断时没有自动上传，需要的话运行 llk --upload {run_dir.name}")
+        return exit_code
+    try:
+        uploader.finish("最终结果" if exit_code == 0 else "中断前的结果")
+    except KeyboardInterrupt:
+        console.print(f"\n[yellow]上传已中断，重新上传: llk --upload {run_dir.name}")
+        return 130
+    return exit_code
+
+
+def _train(run_dir: Path, train_config_file: Path, settings: TrainSettings, buckets: BucketPlan,
+           resume_from: diffpipe.TrainingState | None, on_saved: diffpipe.SavedCallback | None) -> int:
     checkpoint_dir = run_dir / CHECKPOINT_DIR
     log_file = run_dir / LOG_FILE
     try:
         for attempt in range(MAX_NAN_RETRIES + 1):
             known_events = diffpipe.nan_event_files(checkpoint_dir)
             exit_code = diffpipe.run_training(train_config_file, log_file, buckets, settings.epochs, console,
-                                              checkpoint_dir, resume_from, append_log=attempt > 0)
+                                              checkpoint_dir, resume_from, append_log=attempt > 0,
+                                              on_saved=on_saved)
             if not (events := diffpipe.nan_events(checkpoint_dir, known_events)):
                 break
             _print_nan_event(events[-1])
@@ -214,7 +243,10 @@ def train(dataset: str, exclude_images: frozenset[str], dedup: int | None, capti
     if (plan := _plan(dataset_dir, exclude_images, dedup, settings)) is None:
         return 1
     selection, buckets = plan
-    print_plan(len(selection.records), caption_options.trigger, settings, buckets, models, run_dir)
+    connected, uploader = _connect_uploader(settings, config, run_dir)
+    if not connected:
+        return 1
+    print_plan(len(selection.records), caption_options.trigger, settings, buckets, models, run_dir, uploader)
     if not yes and not confirm("是否开始训练?"):
         console.print("已取消")
         return 0
@@ -224,7 +256,7 @@ def train(dataset: str, exclude_images: frozenset[str], dedup: int | None, capti
                                        config)
     write_manifest(run_dir, dataset_dir, len(selection.records), exclude_images, dedup, caption_options, settings,
                    buckets, models, preset)
-    return _run(run_dir, train_config_file, settings, buckets, None)
+    return _run(run_dir, train_config_file, settings, buckets, None, uploader)
 
 
 def _resolve_run(run: str, output_dir: Path) -> Path | None:
@@ -252,7 +284,8 @@ def _recorded_dedup(value: object) -> int | None:
     return value
 
 
-def resume(run: str, yes: bool, config: Config) -> int:
+def resume(run: str, yes: bool, config: Config, auto_upload: bool | None = None) -> int:
+    """auto_upload 不为 None 时覆盖开始训练时的设置（其他设置都沿用 run.json）。"""
     try:
         diffpipe.ensure_installed()
         models = locate_anima_models(config)
@@ -299,11 +332,16 @@ def resume(run: str, yes: bool, config: Config) -> int:
     if (plan := _plan(dataset_dir, exclude_images, dedup, settings)) is None:
         return 1
     selection, buckets = plan
+    if auto_upload is not None:
+        settings = replace(settings, auto_upload=auto_upload)
     if not _json_equal(asdict(buckets), recorded_buckets):
         console.print(f"[red]数据集与开始训练时不同（原来选用 {manifest.get('images', '?')} 张，"
                       f"现在 {len(selection.records):,} 张），无法续训")
         return 1
-    print_plan(len(selection.records), caption_options.trigger, settings, buckets, models, run_dir)
+    connected, uploader = _connect_uploader(settings, config, run_dir)
+    if not connected:
+        return 1
+    print_plan(len(selection.records), caption_options.trigger, settings, buckets, models, run_dir, uploader)
     total_steps = buckets.steps_per_epoch * settings.epochs
     console.print(f"从第 {state.step:,} / {total_steps:,} 步继续")
     if not yes and not confirm("是否继续训练?"):
@@ -312,4 +350,4 @@ def resume(run: str, yes: bool, config: Config) -> int:
 
     train_config_file = _write_configs(run_dir, dataset_dir, selection, caption_options, settings, buckets, models,
                                        config)
-    return _run(run_dir, train_config_file, settings, buckets, state)
+    return _run(run_dir, train_config_file, settings, buckets, state, uploader)

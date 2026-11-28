@@ -107,8 +107,10 @@ llk --unpack /path/to/hatsune_miku.tar.zst      # 也可以直接给压缩包路
 在机器之间搬训练输出和数据集，比如在计算中心训练完把结果取回本地。中转用自己的 Hugging Face 私有仓库：
 
 ```bash
-llk --upload kincora_20261126-1645   # 训练输出 output/<名字>/ → 仓库的 output/<名字>/
+llk --upload                         # output/ 下的全部训练输出 → 仓库的 output/
+llk --upload kincora_20261126-1645   # 一个训练输出 output/<名字>/ → 仓库的 output/<名字>/
 llk --upload kincora                 # 数据集：打包后上传到仓库的 datasets/kincora.tar.zst
+llk --upload run_a run_b             # 名字可以写多个，依次上传
 
 llk --fetch kincora_20261126-1645    # 仓库的 output/<名字>/ → 本地 output/<名字>/
 llk --fetch kincora                  # 仓库的 datasets/kincora.tar.zst → datasets/，并自动解压
@@ -117,7 +119,8 @@ llk --fetch kincora                  # 仓库的 datasets/kincora.tar.zst → da
 - 使用 `config` 里的 `HF_API_KEY`，不需要浏览器登录，token 不会过期。上传需要 write 权限，只取回的机器用 read 权限即可（在 <https://huggingface.co/settings/tokens> 生成 Write 类型，或 Fine-grained 类型勾选自己仓库的写权限）。
 - 仓库默认是 `<用户名>/loralake`，私有的 dataset 仓库，不存在时自动创建；可用 `HF_REPO` 指定。
 - 上传时名字先按本地 `output/` 下的训练输出查找，找不到再按数据集查找；取回时按仓库里的训练输出和数据集查找，找不到会列出仓库里有哪些。覆盖本地已有的内容前会确认，`-y` 跳过。
-- 训练输出整个目录上传；训练中断时目录里还有训练状态，可以拿到别的机器上续训。
+- 训练输出整个目录上传；训练中断时目录里还有训练状态，可以拿到别的机器上续训。仓库里的 `output/<名字>/` 会和本地保持一致：本地已经删掉的文件（被新状态替换的旧训练状态、训练完成后删掉的训练状态）在仓库里也会删掉。不写名字时逐个上传 `output/` 下的训练输出，开始前列出各自的大小并确认一次；没有变化的文件不会重复上传，可以随时重新运行。
+- 训练时自动上传见下文的 `auto_upload`。
 - 中断后重新运行同一命令即可：上传时没有变化的大文件不会重复传，取回时从断点继续（临时目录 `output/.hf-fetch`、`datasets/.hf-fetch`）。会使用 `config` 里的 `PROXY`。很多计算中心只有登录节点能上网，这时在登录节点上运行。
 - 取回的训练输出替换本地同名目录，中断的训练取回后可以直接 `llk --resume <名字>`。
 
@@ -240,6 +243,7 @@ diffusion-pipe 按宽高比分桶，每个桶只保留 batch 大小整数倍的�
 | `--resolution N` | 训练分辨率 | 1024 |
 | `--save-every N` | 每 N 个 epoch 保存一次 | 2 |
 | `--gradient-checkpointing` / `--no-gradient-checkpointing` | 梯度检查点 | 开 |
+| `--auto-upload` / `--no-auto-upload` | 每次保存后自动上传训练输出（见下文） | 关 |
 | `-y` / `--yes` | 跳过确认 | |
 
 ### 中断和续训：`-r` / `--resume`
@@ -249,6 +253,16 @@ llk --resume miku_v1
 ```
 
 训练中可以随时按 Ctrl+C 中断，已经保存的各 epoch LoRA 会移到 `output/<name>/`。训练状态（优化器、数据进度）和 LoRA 一起每 `save_every_epochs` 个 epoch 保存一次，只保留最新一份；中断后用 `--resume <name>` 从最近一次保存的状态继续，最多重练这几个 epoch。续训沿用 `run.json` 里的全部设置，不能再改 `--epochs`、`--lr` 等选项；数据集、筛选结果或底模和开始时不同则拒绝续训。训练成功结束后会删掉训练状态。
+
+### 训练时自动上传：`auto_upload`
+
+在预设的 `train` 里写 `auto_upload: true`（或者训练时加 `--auto-upload`），每次保存 LoRA 和训练状态（每 `save_every_epochs` 个 epoch）后，llk 会在后台把整个训练输出目录同步到 `HF_REPO` 的 `output/<name>/`，效果和 `llk --upload <name>` 相同，训练不用停下来等上传。训练结束后会再上传一次最终结果（整理好的 LoRA，删掉训练状态）。在计算中心训练时，中途断掉也能用 `llk --fetch <name>` 取回最近一次保存的结果，在别的机器上 `llk --resume` 续训。
+
+- 开始训练前会先连接 Hugging Face，检查 `HF_API_KEY`（需要 write 权限）；连不上就不开始训练，用 `--no-auto-upload` 关掉即可。
+- 上传失败（比如网络断了）只会提示，不影响训练，下次保存后会再同步一次。上一次还没传完又保存了，会等它传完再传最新的。
+- 按 Ctrl+C 中断训练时不会再上传，需要的话手动运行 `llk --upload <name>`。训练失败或 NaN 重试用完时，会把当时的结果上传上去。
+- 续训沿用开始训练时的设置，也可以用 `--auto-upload` / `--no-auto-upload` 改；这是续训时唯一能改的选项。
+- 上传前会先在 `output/.hf-upload/` 下做一份快照（大文件用硬链接，基本不占空间），上传完删掉。
 
 ### 出现 NaN 时
 
@@ -288,6 +302,7 @@ train:
   optimizer: adamw_optimi # diffusion-pipe 的优化器名，也可用 AdamW8bit、AdamW8bitKahan、Prodigy 等
   caption_dropout: 0      # 以空 caption 训练的比例（diffusion-pipe 的 uncond_fraction）
   gradient_checkpointing: true
+  auto_upload: false      # 每次保存后在后台把训练输出上传到 HF_REPO（见「训练时自动上传」）
 ```
 
 用 `-c 预设名` 选择，例如 `presets/style.yaml` 对应 `-c style`。

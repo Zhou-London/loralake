@@ -22,6 +22,8 @@ class TrainSettings:
     optimizer: str = "adamw_optimi"
     caption_dropout: float = 0.0
     gradient_checkpointing: bool = True
+    # 每次保存 LoRA 和训练状态后，在后台把训练输出上传到 HF_REPO（同 llk --upload <名字>）
+    auto_upload: bool = False
 
 
 def _toml_value(value: TomlValue) -> str:
